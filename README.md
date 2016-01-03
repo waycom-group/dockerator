@@ -12,59 +12,59 @@ Containers configuration
 
 1. Same configuration for all containers (dockerator.yml):
 ```yml
-    general:
-      cid_file: '/run/dockerator/%(DOCKER_NAME)s.cid'
-      container_restart: always
-      docker_url: 'tcp://127.0.0.1:2375'
-    environment:
-      TZ: Europe/Paris
-    volumes:
-      '/var/log/dockerator/docker/%(DOCKER_NAME)s/':
-        destination: /var/log/
-        mode: rw
-      '/var/run/mysqld/':
-        destination: /var/run/mysqld/
-        mode: rw
+general:
+  cid_file: '/run/dockerator/%(DOCKER_NAME)s.cid'
+  container_restart: always
+  docker_url: 'tcp://127.0.0.1:2375'
+environment:
+  TZ: Europe/Paris
+volumes:
+  '/var/log/dockerator/docker/%(DOCKER_NAME)s/':
+    destination: /var/log/
+    mode: rw
+  '/var/run/mysqld/':
+    destination: /var/run/mysqld/
+    mode: rw
 ```
 
-2. Common configuration for containers with the same image (e.g.: image.d/php-fpm\_5.6.yml):
+2. Common configuration for containers with the same image (e.g.: image.d/php-fpm_5.6.yml):
 ```yml
-    general:
-      host_ip: 127.0.0.1
-      container_port: 9000
-      image: 'docker-registry.example.org/php-fpm:5.6'
-    volumes:
-      '/etc/dockerator/%(DOCKER_NAME)s/config/php_conf.d/*':
-        destination: /etc/php5/fpm/conf.d/
-        mode: ro
-        glob: true
-      '/etc/dockerator/%(DOCKER_NAME)s/config/fpm_pool.d/':
-        destination: /etc/php5/fpm/pool.d/
-        mode: rw
-      '/srv/php-fpm/%(DOCKER_NAME)s': '/var/run/php-fpm'
+general:
+  host_ip: 127.0.0.1
+  container_port: 9000
+  image: 'docker-registry.example.org/php-fpm:5.6'
+volumes:
+  '/etc/dockerator/%(DOCKER_NAME)s/config/php_conf.d/*':
+    destination: /etc/php5/fpm/conf.d/
+    mode: ro
+    glob: true
+  '/etc/dockerator/%(DOCKER_NAME)s/config/fpm_pool.d/':
+    destination: /etc/php5/fpm/pool.d/
+    mode: rw
+  '/srv/php-fpm/%(DOCKER_NAME)s': '/var/run/php-fpm'
 ```
 
 3. Configuration for a specific container (e.g.: conf.d/foobar.yml):
 ```yml
-    general:
-      name: fpm_foobar
-      image_cfg_file: 'php-fpm_5.6.yml'
-      host_port: 9004
-    environment:
-      PHP_USER_UID: 10000
-      PHP_USER_GID: 10000
-    ports:
-      '%(container_port)s': '0.0.0.0:%(host_port)s'
-      '%(container_port)s': '%(host_ip)s:8080'
-    volumes:
-      '/var/www/foobar.com/': '/var/www/foobar.com/'
+general:
+  name: fpm_foobar
+  image_cfg_file: 'php-fpm_5.6.yml'
+  host_port: 9004
+environment:
+  PHP_USER_UID: 10000
+  PHP_USER_GID: 10000
+ports:
+  '%(container_port)s': '0.0.0.0:%(host_port)s'
+  '%(container_port)s': '%(host_ip)s:8080'
+volumes:
+  '/var/www/foobar.com/': '/var/www/foobar.com/'
 ```
 
 Actually, there are four variables that you can use in configuration files:
-  - DOCKER\_NAME (e.g. fpm\_foobar)
-  - container\_port (e.g. 9000)
-  - host\_ip (e.g. 127.0.0.1)
-  - host\_port (e.g. 9004)
+  - DOCKER_NAME (e.g. fpm_foobar)
+  - container_port (e.g. 9000)
+  - host_ip (e.g. 127.0.0.1)
+  - host_port (e.g. 9004)
 
 
 Dockerator command line
@@ -107,7 +107,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar create
+  $ dockerator -n fpm_foobar create
 ```
 
 ### kill:
@@ -121,7 +121,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar kill
+  $ dockerator -n fpm_foobar kill
 ```
 
 ### list:
@@ -135,7 +135,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar list
+  $ dockerator -n fpm_foobar list
 ```
 
 ### reload (stop -> remove -> create -> start):
@@ -149,7 +149,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar reload
+  $ dockerator -n fpm_foobar reload
 ```
 
 ### remove:
@@ -163,7 +163,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar remove
+  $ dockerator -n fpm_foobar remove
 ```
 
 ### restart (stop -> start):
@@ -177,7 +177,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar restart
+  $ dockerator -n fpm_foobar restart
 ```
 
 ### run (create -> start):
@@ -191,7 +191,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar run
+  $ dockerator -n fpm_foobar run
 ```
 
 ### start:
@@ -205,7 +205,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar start
+  $ dockerator -n fpm_foobar start
 ```
 
 ### status:
@@ -219,7 +219,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar status
+  $ dockerator -n fpm_foobar status
 ```
 
 ### stop:
@@ -233,7 +233,7 @@ Options:
 ```
 * Container by name:
 ```sh
-  $ dockerator -n fpm\_foobar stop
+  $ dockerator -n fpm_foobar stop
 ```
 
 
