@@ -97,144 +97,144 @@ Options:
 ## Actions:
 
 ### create:
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator create
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 create
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar create
-```
+  ```
 
 ### kill:
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator kill
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 kill
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar kill
-```
+  ```
 
 ### list:
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator list
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 list
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar list
-```
+  ```
 
 ### reload (stop -> remove -> create -> start):
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator reload
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 reload
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar reload
-```
+  ```
 
 ### remove:
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator remove
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 remove
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar remove
-```
+  ```
 
 ### restart (stop -> start):
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator restart
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 restart
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar restart
-```
+  ```
 
 ### run (create -> start):
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator run
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 run
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar run
-```
+  ```
 
 ### start:
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator start
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 start
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar start
-```
+  ```
 
 ### status:
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator status
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 status
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar status
-```
+  ```
 
 ### stop:
-* All containers:
-```sh
+  * All containers:
+  ```sh
   $ dockerator stop
-```
-* Containers by image:
-```sh
+  ```
+  * Containers by image:
+  ```sh
   $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 stop
-```
-* Container by name:
-```sh
+  ```
+  * Container by name:
+  ```sh
   $ dockerator -n fpm_foobar stop
-```
+  ```
 
 
 Installation
