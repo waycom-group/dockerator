@@ -70,7 +70,7 @@ Actually, there are four variables that you can use in configuration files:
 Dockerator command line
 -----------------------
 ```sh
-Usage: dockerator [options]
+Usage: dockerator [options] [action]
 
 Options:
   -h, --help            show this help message and exit
