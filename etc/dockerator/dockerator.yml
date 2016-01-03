@@ -1,0 +1,8 @@
+general:
+  cid_file: '/run/dockerator/%(DOCKER_NAME)s.cid'
+  container_restart: always
+  docker_url: 'tcp://127.0.0.1:2375'
+volumes:
+  '/var/log/dockerator/docker/%(DOCKER_NAME)s/':
+    destination: /var/log/
+    mode: rw

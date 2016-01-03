@@ -1,0 +1,674 @@
+#! /usr/bin/python
+# -*- coding: utf-8 -*-
+"""
+Dockerator
+"""
+
+__license__ = """
+    Copyright 2015 Waycom <devs@waycom.net>
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+"""
+
+import glob
+import errno
+import os
+import sys
+import time
+import yaml
+
+from docker import client
+from docker.errors import APIError, DockerException
+
+import logging
+from logging.handlers import WatchedFileHandler
+from optparse import OptionParser
+
+DEFAULT_BIND_MODE       = 'rw'
+DEFAULT_CONF_FILE       = "/etc/dockerator/dockerator.yml"
+DEFAULT_CONFS_DIR       = os.path.join(os.path.dirname(DEFAULT_CONF_FILE), 'conf.d')
+DEFAULT_IMG_CONFS_DIR   = os.path.join(os.path.dirname(DEFAULT_CONF_FILE), 'image.d')
+DEFAULT_LOG_FILE        = "/var/log/dockerator/dockerator.log"
+
+DEFAULT_RESTART_POLICY	= 'on-failure'
+RESTART_POLICIES        = ('always', 'on-failure')
+
+SYSLOG_NAME             = "Dockerator"
+LOG                     = logging.getLogger(SYSLOG_NAME)
+
+ACTION_CHOICES          = ('create',
+                           'kill',
+                           'list',
+                           'reload',
+                           'remove',
+                           'restart',
+                           'run',
+                           'start',
+                           'status',
+                           'stop')
+_CLIENTS                = {}
+
+
+def argv_parse_check():
+    """
+    Parse (and check a little) command line parameters
+    """
+    parser              = OptionParser(usage="usage: %prog [options] [action]")
+
+    parser.add_option("-a",
+                      dest      = 'action',
+                      default   = 'list',
+                      choices   = ACTION_CHOICES,
+                      help      = ("Choice action on one or many containers:\n"
+                                   "\t%s" % ', '.join(ACTION_CHOICES)))
+    parser.add_option("-c",
+                      dest      = 'conffile',
+                      default   = DEFAULT_CONF_FILE,
+                      help      = "Use configuration file <conffile> instead of %default")
+    parser.add_option("--configs-dir",
+                      dest      = 'confsdir',
+                      default   = DEFAULT_CONFS_DIR,
+                      help      = "Use configuration directory <confsdir> instead of %default")
+    parser.add_option("-f",
+                      action    = 'store_true',
+                      dest      = 'force',
+                      default   = False,
+                      help      = "Force")
+    parser.add_option("--image-name",
+                      dest      = 'imgname',
+                      help      = "Choice container by image")
+    parser.add_option("--image-configs-dir",
+                      dest      = 'imgconfsdir',
+                      default   = DEFAULT_IMG_CONFS_DIR,
+                      help      = "Use configuration directory <imgconfsdir> for images instead of %default")
+    parser.add_option("-n",
+                      dest      = 'name',
+                      help      = "Choice container by name")
+    parser.add_option("--logfile",
+                      dest      = 'logfile',
+                      type      = 'string',
+                      default   = DEFAULT_LOG_FILE,
+                      help      = "Use log file <logfile> instead of %default")
+    parser.add_option("-l",
+                      dest      = 'loglevel',
+                      default   = 'info',   # warning: see affectation under
+                      choices   = ('critical', 'error', 'warning', 'info', 'debug'),
+                      help      = ("Emit traces with LOGLEVEL details, must be one of:\t"
+                                   "critical, error, warning, info, debug"))
+
+    options, args       = parser.parse_args()
+
+    if args and args[0] in ACTION_CHOICES:
+        options.action  = args.pop(0)
+
+    if args:
+        parser.error("only argument [action] is allowed - use option --help to get an help screen")
+
+    options.loglevel    = getattr(logging, options.loglevel.upper(), logging.INFO)
+
+    return options
+
+
+class Dockerator(object):
+    def __init__(self, options, default_conf):
+        self.options      = options
+        self.default_conf = default_conf
+        self.confs        = self._build_conf()
+        self.cli          = None
+
+    def set_client(self, cli):
+        self.cli = cli
+        return self
+
+    def remove_if_stale_cidfile(self, cidfile):
+        """
+        @cidfile: CID file to remove if it is staled.
+
+        Exceptions are logged and are not propagated.
+        """
+        try:
+            try:
+                with open(cidfile, 'r') as f:
+                    cid_instance = f.readline().strip()
+            except IOError, e:
+                if e.errno == errno.ENOENT:
+                    return # nothing to suppress, so do nothing...
+                raise
+
+            for container in self.cli.containers(**{'all':     True,
+                                                    'trunc':   False,
+                                                    'quiet':   True}):
+                if container['Id'] == cid_instance:
+                    LOG.warning("A cidfile %r already exists (contains cid %d) and an container is running with that cid.",
+                                cidfile,
+                                cid_instance)
+                    return
+            os.unlink(cidfile)
+            return
+        except Exception: # pylint: disable-msg=W0703
+            LOG.exception("unexpected error")
+
+    @staticmethod
+    def take_file_lock(own_file, lock_file, own_content):
+        """
+        Atomically "move" @own_file to @lock_file if the latter does not exist,
+        else just remove @own_file.
+
+        @own_file: filepath of the temporary file that contains our PID
+        @lock_file: destination filepath
+        @own_content: content of @own_file
+
+        Returns True if the lock has been successfully taken, else False.
+        (Caller should also be prepared for OSError exceptions)
+        """
+        try:
+            try:
+                os.link(own_file, lock_file)
+            finally:
+                os.unlink(own_file)
+        except OSError, e:
+            if e.errno == errno.EEXIST:
+                LOG.warning("The lock file %r already exists - won't "
+                            "overwrite it.  An other instance of ourself "
+                            "is probably running.", lock_file)
+                return False
+            else:
+                raise
+
+        with open(lock_file, 'r') as f:
+            content = f.read(len(own_content) + 1)
+
+        if content != own_content:
+            LOG.warning("I thought I successfully took the lock file %r but "
+                        "it does not contain what was expected.  Somebody is "
+                        "playing with us.", lock_file)
+            return False
+
+        return True
+
+    @staticmethod
+    def read_cidfile(cidfile):
+        try:
+            with open(cidfile, 'r') as f:
+                return f.read().strip()
+        except Exception:
+            return False
+
+    def lock_cidfile(self, cid, cidfile):
+        """
+        @cid:
+            current cid
+        @cidfile:
+            must be a writable path
+
+        Exceptions are logged.
+
+        Returns the CID.
+        """
+        try:
+            self.remove_if_stale_cidfile(cidfile)
+            cid_write_file = "%s.%s" % (cidfile, cid)
+            fcid           = None
+            try:
+                with open(cid_write_file, 'w') as fcid:
+                    fcid.write("%s\n" % cid)
+            finally:
+                if fcid:
+                    fcid.close()
+            if not self.take_file_lock(cid_write_file, cidfile, "%s\n" % cid):
+                return False
+        except SystemExit:
+            raise
+        except Exception:
+            LOG.exception("unable to take cidfile")
+            return False
+
+        return cid
+
+    def unlock_cidfile(self, cidfile):
+        """
+        @cidfile:
+            must be a writable path
+
+        Exceptions are logged.
+
+        Returns the CID.
+        """
+        try:
+            self.remove_if_stale_cidfile(cidfile)
+        except SystemExit:
+            raise
+        except Exception:
+            LOG.exception("unable to take cidfile")
+            return False
+
+        return True
+
+    @classmethod
+    def _conf_params(cls, current, params):
+        r   = {}
+
+        if not isinstance(current, dict):
+            return r
+
+        for key, value in current.iteritems():
+            if isinstance(key, basestring):
+                k    = key % params
+            else:
+                k    = key
+
+            if isinstance(value, basestring):
+                r[k] = value % params
+            elif isinstance(value, dict):
+                r[k] = cls._conf_params(value, params)
+            else:
+                r[k] = value
+
+        return r
+
+    @classmethod
+    def _conf_merge(cls, current, default):
+        if isinstance(current, dict) and isinstance(default, dict):
+            for key, value in default.iteritems():
+                if key not in current:
+                    current[key] = value
+                else:
+                    current[key] = cls._conf_merge(current[key], value)
+
+        return current
+
+    def _build_conf(self):
+        if not os.path.isdir(self.options.confsdir) \
+           or not os.access(self.options.confsdir, os.R_OK):
+            LOG.warning("Configurations directory doesn't exist "
+                        "or isn't readable. (confsdir: %r)" % self.options.confsdir)
+            return
+
+        r = {'names':  {},
+             'images': {}}
+
+        for x in os.listdir(self.options.confsdir):
+            conf_file = os.path.join(self.options.confsdir, x)
+            if not (os.path.isfile(conf_file) \
+               and os.access(conf_file, os.R_OK) \
+               and not conf_file.startswith('.')
+               and conf_file.endswith('.yml')):
+                continue
+
+            with open(conf_file, 'r') as f:
+                current_conf = yaml.load(f)
+
+            if not isinstance(current_conf, dict):
+                raise ValueError("Invalid configuration file: %r" % conf_file)
+            if not current_conf.has_key('general'):
+                raise ValueError("Missing configuration section 'general' in file: %r" % conf_file)
+            if not isinstance(current_conf['general'], dict):
+                raise ValueError("Invalid configuration for section 'general' in file: %r" % conf_file)
+            if not current_conf['general'].has_key('name'):
+                raise ValueError("Missing configuration option 'name' for section 'general' in file: %r" % conf_file)
+
+            conf_merged = self._conf_merge(current_conf, self.default_conf)
+
+            if conf_merged['general'].get('image_cfg_file'):
+                if not os.access(conf_merged['general']['image_cfg_file'], os.F_OK):
+                    xfile = os.path.join(self.options.imgconfsdir, conf_merged['general']['image_cfg_file'])
+                else:
+                    xfile = conf_merged['general']['image_cfg_file']
+
+                with open(xfile, 'r') as f:
+                    conf_merged = self._conf_merge(conf_merged, yaml.load(f))
+
+            r['names'][conf_merged['general']['name']]   = self._conf_params(conf_merged,
+                                                                            {'DOCKER_NAME':    conf_merged['general']['name'],
+                                                                             'container_port': conf_merged['general'].get('container_port', ''),
+                                                                             'host_ip':        conf_merged['general'].get('host_ip', ''),
+                                                                             'host_port':      conf_merged['general'].get('host_port', '')})
+
+            if not r['images'].has_key(conf_merged['general']['image']):
+                r['images'][conf_merged['general']['image']] = {}
+
+            r['images'][conf_merged['general']['image']][conf_merged['general']['name']] = r['names'][conf_merged['general']['name']]
+
+            if not current_conf['general'].has_key('cid_file'):
+                raise ValueError("Missing configuration option 'cid_file' "
+                                 "for section 'general' in file: %r" % conf_file)
+
+        return r
+
+    @staticmethod
+    def _build_create_data(conf):
+        data    = {'name':        conf['general']['name'],
+                   'image':       conf['general']['image'],
+                   'detach':      True,
+                   'environment': {},
+                   'host_config': {}}
+
+        if conf['general'].has_key('container_restart'):
+            max_retry = 0
+
+            if isinstance(conf['general']['container_restart'], basestring):
+                if conf['general']['container_restart'] in RESTART_POLICIES:
+                    data['host_config']['restart_policy'] = {'MaximumRetryCount': max_retry,
+                                                             'name':              conf['general']['container_restart']}
+                else:
+                    raise ValueError("Invalid configuration option 'container_restart' in 'general")
+            elif isinstance(conf['general']['container_restart'], dict):
+                data['host_config']['restart_policy'] = {}
+                if conf['general']['container_restart'].has_key('max_retry'):
+                    data['host_config']['restart_policy']['MaximumRetryCount'] = int(conf['general']['container_restart']['max_retry'])
+
+                if conf['general']['container_restart'].has_key('name'):
+                    if conf['general']['container_restart']['name'] in RESTART_POLICIES:
+                        data['host_config']['restart_policy']['Name'] = conf['general']['container_restart']['name']
+                    else:
+                        data['host_config']['restart_policy']['Name'] = DEFAULT_RESTART_POLICY
+
+                if not data['host_config']['restart_policy']:
+                    del data['host_config']['restart_policy']
+
+        ports   = set()
+        if conf.has_key('ports') and isinstance(conf['ports'], dict):
+            for key, value in conf['ports'].iteritems():
+                publish = ("%s:%s" % (value, key)).strip(':')
+                if publish:
+                    ports.add(publish)
+
+        if not ports:
+            publish = ("%s:%s:%s" % (conf['general'].get('host_ip', ''),
+                                     conf['general'].get('host_port', ''),
+                                     conf['general'].get('container_port', ''))).strip(':')
+            if publish:
+                ports.add(publish)
+
+        if ports:
+            data['ports']                        = []
+            data['host_config']['port_bindings'] = {}
+            for port in ports:
+                binding        = port.rsplit(':', 2)
+                container_port = binding.pop(-1)
+                data['ports'].append(container_port)
+                data['host_config']['port_bindings'][container_port] = binding
+            if not data['ports']:
+                del data['ports']
+                del data['host_config']['port_bindings']
+
+        data['environment']['DOCKER_NAME'] = conf['general']['name']
+
+        if conf.has_key('environment') and isinstance(conf['environment'], dict):
+            for key, value in conf['environment'].iteritems():
+                data['environment'][key] = "%s" % value
+
+        if conf.has_key('volumes') and isinstance(conf['volumes'], dict):
+            data['volumes']              = []
+            data['host_config']['binds'] = {}
+
+            for key, value in conf['volumes'].iteritems():
+                if isinstance(value, basestring):
+                    data['volumes'].append(value)
+                    data['host_config']['binds'][key] = {'bind': value,
+                                                         'mode': DEFAULT_BIND_MODE}
+                if isinstance(value, dict):
+                    if not value.get('destination'):
+                        continue
+
+                    mode = value.get('mode') or DEFAULT_BIND_MODE
+
+                    if not isinstance(value['destination'], list):
+                        destination = [value['destination']]
+                    else:
+                        destination = list(value['destination'])
+
+                    for dest in destination:
+                        if not value.get('glob'):
+                            data['volumes'].append(dest)
+                            data['host_config']['binds'][key] = {'bind': dest,
+                                                                 'mode': mode}
+                        else:
+                            for x in glob.glob(key):
+                                data['volumes'].append(x)
+                                data['host_config']['binds'][x] = {'bind': os.path.join(dest, os.path.basename(x)),
+                                                                   'mode': mode}
+            if not data['volumes']:
+                del data['volumes']
+                del data['host_config']['binds']
+
+        if conf['general'].get('docker_cmds'):
+            data['command'] = []
+            if isinstance(conf['general']['docker_cmds'], basestring):
+                data['command'].append(conf['general']['docker_cmds'])
+            elif isinstance(conf['general']['docker_cmds'], list):
+                data['command'].extend(conf['general']['docker_cmds'])
+            else:
+                raise ValueError("Invalid configuration option 'docker_cmds' for section 'general'")
+
+        if not data['host_config']:
+            del data['host_config']
+
+        return data
+
+    def do_create(self, name, conf):
+        if self.cli.containers(**{'all': True, 'filters': {'name': name}}):
+            LOG.error("Container %r already exists", name)
+            return
+
+        data    = self._build_create_data(conf)
+        if not data:
+            return
+
+        cid_dir = os.path.dirname(os.path.realpath(conf['general']['cid_file']))
+        if not os.access(cid_dir, os.F_OK):
+            os.makedirs(cid_dir)
+
+        LOG.info("[%s] Creating", name)
+
+        container = self.cli.create_container(**data)
+        if not container:
+            return
+        elif not container.get('Id'):
+            LOG.error("[%s] Unable to get container Id from API", name)
+            return
+
+        if container.get('Warnings'):
+            LOG.warning("[%s] %r", name, container['Warnings'])
+
+        if not self.lock_cidfile(container['Id'], conf['general']['cid_file']):
+            LOG.error("[%s] Unable to write cid_file: %r",
+                      name,
+                      conf['general']['cid_file'])
+
+        return container
+
+    def do_kill(self, name, conf):
+        cid     = self.read_cidfile(conf['general']['cid_file'])
+        if not cid:
+            LOG.error("Unable to get cid from cid_file: %r", conf['general']['cid_file'])
+            return
+
+        LOG.info("[%s] Killing", name)
+        self.cli.kill(cid)
+
+    def do_start(self, name, conf):
+        cid     = self.read_cidfile(conf['general']['cid_file'])
+        if not cid:
+            LOG.error("Unable to get cid from cid_file: %r", conf['general']['cid_file'])
+            return
+
+        LOG.info("[%s] Starting", name)
+        self.cli.start(cid)
+
+    def do_status(self, name, conf):
+        containers = self.cli.containers(**{'all':     True,
+                                            'trunc':   False,
+                                            'filters': {'name': name}})
+
+        if not containers:
+            LOG.warning("Container %r not found", name)
+            return
+
+        container  = containers.pop(0)
+
+        print "Container: %r" % name
+        for key in ('Id', 'Image', 'Command', 'Created', 'Status', 'Ports', 'Names'):
+            key_view = "%s:" % key
+            if key == 'Created':
+                print "    %-10s%s" % (key_view,
+                                       time.strftime('%Y-%m-%d %H:%M:%S',
+                                                     time.localtime(container['Created'])))
+            elif key == 'Ports':
+                ports = []
+                for port in container['Ports']:
+                   binding = ""
+                   if port.get('IP'):
+                       binding += port['IP']
+                   if port.get('PublicPort'):
+                       binding += ":%s" % port['PublicPort']
+                   binding = binding.lstrip(':')
+                   if binding:
+                       binding = "%s->" % binding
+
+                   ports.append("%s%s/%s" % (binding,
+                                             port['PrivatePort'],
+                                             port['Type']))
+                print "    %-10s%s" % (key_view, ", ".join(ports))
+            elif key == 'Names':
+                print "    %-10s%s" % (key_view,
+                                       ", ".join(map(lambda x: x.lstrip('/'),
+    	       	                                 container['Names'])))
+            else:
+                print "    %-10s%s" % (key_view, container[key])
+
+    def do_stop(self, name, conf):
+        cid = self.read_cidfile(conf['general']['cid_file'])
+        if not cid:
+            LOG.warning("Unable to get cid from cid_file: %r",
+                        conf['general']['cid_file'])
+            return
+
+        LOG.info("[%s] Stopping", name)
+        self.cli.stop(cid)
+
+    def do_remove(self, name, conf):
+        if not self.options.force:
+            self.do_stop(name, conf)
+
+        cid = self.read_cidfile(conf['general']['cid_file'])
+        if not cid:
+            LOG.warning("Unable to get cid from cid_file: %r",
+                        conf['general']['cid_file'])
+            return
+
+        LOG.info("[%s] Removing", name)
+        self.cli.remove_container(cid,
+                                  force = self.options.force)
+        self.unlock_cidfile(conf['general']['cid_file'])
+
+    def do_list(confs):
+        print "Containers:"
+        for name in sorted(confs.iterkeys()):
+            print "    - %s" % name
+
+    def do_reload(self, name, conf):
+        self.do_remove(name, conf)
+        self.do_run(name, conf)
+
+    def do_restart(self, name, conf):
+        self.do_stop(name, conf)
+        self.do_start(name, conf)
+
+    def do_run(self, name, conf):
+        self.do_create(name, conf)
+        self.do_start(name, conf)
+
+
+def main(options):
+    """
+    Main function; start the server
+    """
+    logging.basicConfig(level=logging.DEBUG)
+    filehandler = WatchedFileHandler(options.logfile)
+    filehandler.setFormatter(logging.Formatter("%%(asctime)-15s %s[%%(process)d]: %%(message)s" % SYSLOG_NAME,
+                                               datefmt='%Y-%m-%d %H:%M:%S'))
+    root_logger = logging.getLogger('')
+    root_logger.addHandler(filehandler)
+
+    logging.getLogger('requests').setLevel(logging.WARNING)
+
+    with open(options.conffile, 'r') as f:
+        default_conf = yaml.load(f)
+
+    ret = 0
+
+    try:
+        root_logger.setLevel(options.loglevel)
+        os.umask(022)
+
+        dockerator   = Dockerator(options, default_conf)
+
+        if not dockerator.confs:
+            LOG.error("No container configuration found")
+            return
+
+        if options.action == 'list':
+            if options.imgname:
+                if not dockerator.confs['images'].has_key(options.imgname):
+                    LOG.error("Image %r not found", options.imgname)
+                else:
+                    do_list(dockerator.confs['images'][options.imgname])
+            else:
+                do_list(dockerator.confs['names'])
+            return
+
+        ref = None
+
+        if options.name:
+            if not dockerator.confs['names'].has_key(options.name):
+                LOG.error("Container %r doesn't exist", options.name)
+            else:
+                ref = {options.name: dockerator.confs['names'][options.name]}
+        elif options.imgname:
+            if not dockerator.confs['images'].has_key(options.imgname):
+                LOG.error("Image %r not found", options.imgname)
+            else:
+                ref = dockerator.confs['images'][options.imgname]
+        else:
+            ref = dockerator.confs['names']
+
+        if not ref:
+            return
+
+        for name in sorted(ref.iterkeys()):
+            docker_url = ref[name]['general']['docker_url']
+            if not _CLIENTS.has_key(docker_url):
+                _CLIENTS[docker_url] = client.AutoVersionClient(docker_url)
+                dockerator.set_client(_CLIENTS[docker_url])
+            getattr(dockerator, "do_%s" % options.action)(name, ref[name])
+    except DockerException, e:
+        ret = 7
+        LOG.error("%r", e)
+    except APIError, e:
+        ret = 6
+        LOG.error("%r", e.explanation)
+    except (KeyboardInterrupt, SystemExit):
+        ret = 2
+        raise
+    except Exception:
+        ret = 1
+        LOG.exception("bad things happen")
+    finally:
+        for cli in _CLIENTS.itervalues():
+            if cli:
+                cli.close()
+        sys.exit(ret)
+
+if __name__ == '__main__':
+    main(argv_parse_check())

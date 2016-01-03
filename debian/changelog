@@ -1,0 +1,33 @@
+dockerator (1.0.3) unstable; urgency=medium
+
+  * Use docker API instead of docker commands.
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Sun, 03 Jan 2016 15:43:03 +0100
+
+dockerator (1.0.2) unstable; urgency=medium
+
+  * Renamed section volume into volumes.
+  * Added automatically environment variable DOCKER_NAME.
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Thu, 31 Dec 2015 11:11:20 +0100
+
+dockerator (1.0.1) unstable; urgency=medium
+
+  * Added possibility to bind many ports by docker (section: ports).
+  * Added option docker_start_args.
+  * Added possibility to bind many volumes with the same origin.
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Thu, 31 Dec 2015 10:04:39 +0100
+
+dockerator (1.0.0-1) unstable; urgency=low
+
+  * Fixed initscript, dockerator must start after docker.
+  * Added possibility to load configuration by image. 
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Tue, 29 Dec 2015 16:36:49 +0100
+
+dockerator (1.0) UNRELEASED; urgency=medium
+
+  * Initial release. (Closes: #XXXXXX)
+
+ -- devs <devs@waycom.net>  Thu, 19 Nov 2015 07:53:23 -0500

@@ -1,0 +1,12 @@
+general:
+  name: 'example.org'
+  #image: 'docker-registry.example.org/php-fpm:5.5'
+  image_cfg_file: 'php-fpm_5.5.yml'
+environment:
+  PHP_USER_UID: 10000
+  PHP_USER_GID: 10000
+volumes:
+  '/var/www/example.org/': '/var/www/example.org/'
+ports:
+  3000: '0.0.0.0:3001'
+  '%(container_port)s': '%(host_ip)s:3000'

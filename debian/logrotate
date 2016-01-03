@@ -1,0 +1,9 @@
+/var/log/dockerator/dockerator.log {
+    rotate 12
+    weekly
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

@@ -1,0 +1,58 @@
+#!/bin/sh
+# Start/stop Dockerator.
+#
+### BEGIN INIT INFO
+# Provides:             dockerator
+# Required-Start:       $local_fs $remote_fs $network $syslog docker
+# Required-Stop:        $local_fs $remote_fs $network $syslog docker
+# Default-Start:        2 3 4 5
+# Default-Stop:         0 1 6
+# Short-Description:    Dockers Launcher.
+# Description:          Dockers as service by Waycom.
+### END INIT INFO
+#set -x
+set -e
+
+SCRIPTNAME="dockerator"
+SCRIPT="/usr/bin/${SCRIPTNAME}"
+EXTRAOPTS=""
+
+test -x "${SCRIPT}" || exit 0
+
+[ -r "/etc/default/${SCRIPTNAME}" ] && . "/etc/default/${SCRIPTNAME}"
+
+if [ ! -z "${2}" ];
+then
+    OPT_NAME="-n ${2}"
+else
+    OPT_NAME=""
+fi
+
+. /lib/lsb/init-functions
+
+case "${1}" in
+    start)
+        log_daemon_msg "Starting Dockerator" "${SCRIPTNAME}"
+        ${SCRIPT} -a start ${OPT_NAME} ${EXTRAOPTS}
+        log_end_msg ${?}
+        ;;
+    stop)
+        log_daemon_msg "Stopping Dockerator" "${SCRIPTNAME}"
+        ${SCRIPT} -a stop ${OPT_NAME} ${EXTRAOPTS}
+        log_end_msg ${?}
+        ;;
+    reload)
+        log_daemon_msg "Reloading Dockerator" "${SCRIPTNAME}"
+        ${SCRIPT} -a reload ${OPT_NAME} ${EXTRAOPTS}
+        log_end_msg ${?}
+        ;;
+    restart)
+        log_daemon_msg "Restarting Dockerator" "${SCRIPTNAME}"
+        ${SCRIPT} -a restart ${OPT_NAME} ${EXTRAOPTS}
+        log_end_msg ${?}
+        ;;
+    *)
+        log_action_msg "Usage: ${0} {start|stop|restart|reload} [name]"
+        exit 2
+    ;;
+esac

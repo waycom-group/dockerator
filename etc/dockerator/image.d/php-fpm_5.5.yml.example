@@ -1,0 +1,13 @@
+general:
+  host_ip: 127.0.0.1
+  container_port: 9000
+  image: 'docker-registry.example.org/php-fpm:5.5'
+volumes:
+  '/etc/dockerator/%(DOCKER_NAME)s/config/php_conf.d/*':
+    destination: /etc/php5/fpm/conf.d/
+    mode: ro
+    glob: true
+  '/etc/dockerator/%(DOCKER_NAME)s/config/fpm_pool.d/':
+    destination: /etc/php5/fpm/pool.d/
+    mode: rw
+  '/srv/php-fpm/%(DOCKER_NAME)s': '/var/run/php-fpm'
