@@ -11,54 +11,54 @@ Containers configuration
 ------------------------
 
 1. Same configuration for all containers (dockerator.yml):
-```yml
-general:
-  cid_file: '/run/dockerator/%(DOCKER_NAME)s.cid'
-  container_restart: always
-  docker_url: 'tcp://127.0.0.1:2375'
-environment:
-  TZ: Europe/Paris
-volumes:
-  '/var/log/dockerator/docker/%(DOCKER_NAME)s/':
-    destination: /var/log/
-    mode: rw
-  '/var/run/mysqld/':
-    destination: /var/run/mysqld/
-    mode: rw
-```
+  ```yml
+  general:
+    cid_file: '/run/dockerator/%(DOCKER_NAME)s.cid'
+    container_restart: always
+    docker_url: 'tcp://127.0.0.1:2375'
+  environment:
+    TZ: Europe/Paris
+  volumes:
+    '/var/log/dockerator/docker/%(DOCKER_NAME)s/':
+      destination: /var/log/
+      mode: rw
+    '/var/run/mysqld/':
+      destination: /var/run/mysqld/
+      mode: rw
+  ```
 
 2. Common configuration for containers with the same image (e.g.: image.d/php-fpm_5.6.yml):
-```yml
-general:
-  host_ip: 127.0.0.1
-  container_port: 9000
-  image: 'docker-registry.example.org/php-fpm:5.6'
-volumes:
-  '/etc/dockerator/%(DOCKER_NAME)s/config/php_conf.d/*':
-    destination: /etc/php5/fpm/conf.d/
-    mode: ro
-    glob: true
-  '/etc/dockerator/%(DOCKER_NAME)s/config/fpm_pool.d/':
-    destination: /etc/php5/fpm/pool.d/
-    mode: rw
-  '/srv/php-fpm/%(DOCKER_NAME)s': '/var/run/php-fpm'
-```
+  ```yml
+  general:
+    host_ip: 127.0.0.1
+    container_port: 9000
+    image: 'docker-registry.example.org/php-fpm:5.6'
+  volumes:
+    '/etc/dockerator/%(DOCKER_NAME)s/config/php_conf.d/*':
+      destination: /etc/php5/fpm/conf.d/
+      mode: ro
+      glob: true
+    '/etc/dockerator/%(DOCKER_NAME)s/config/fpm_pool.d/':
+      destination: /etc/php5/fpm/pool.d/
+      mode: rw
+    '/srv/php-fpm/%(DOCKER_NAME)s': '/var/run/php-fpm'
+  ```
 
 3. Configuration for a specific container (e.g.: conf.d/foobar.yml):
-```yml
-general:
-  name: fpm_foobar
-  image_cfg_file: 'php-fpm_5.6.yml'
-  host_port: 9004
-environment:
-  PHP_USER_UID: 10000
-  PHP_USER_GID: 10000
-ports:
-  '%(container_port)s': '0.0.0.0:%(host_port)s'
-  '%(container_port)s': '%(host_ip)s:8080'
-volumes:
-  '/var/www/foobar.com/': '/var/www/foobar.com/'
-```
+  ```yml
+  general:
+    name: fpm_foobar
+    image_cfg_file: 'php-fpm_5.6.yml'
+    host_port: 9004
+  environment:
+    PHP_USER_UID: 10000
+    PHP_USER_GID: 10000
+  ports:
+    '%(container_port)s': '0.0.0.0:%(host_port)s'
+    '%(container_port)s': '%(host_ip)s:8080'
+  volumes:
+    '/var/www/foobar.com/': '/var/www/foobar.com/'
+  ```
 
 Actually, there are four variables that you can use in configuration files:
   - DOCKER_NAME (e.g. fpm_foobar)
