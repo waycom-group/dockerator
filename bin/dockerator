@@ -454,7 +454,6 @@ class Dockerator(object):
         if 'ports' in conf and isinstance(conf['ports'], dict):
             for key, value in conf['ports'].iteritems():
                 publish = ("%s:%s" % (value, key)).strip(':')
-                print publish
                 if publish:
                     ports.add(publish)
 
