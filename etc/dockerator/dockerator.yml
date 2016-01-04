@@ -1,7 +1,14 @@
 general:
+  action_start: reload
+  action_stop: remove
   cid_file: '/run/dockerator/%(DOCKER_NAME)s.cid'
+  container_enable: true
   container_restart: always
   docker_url: 'tcp://127.0.0.1:2375'
+init:
+  action_start: start
+  action_stop: kill
+  container_enable: false
 volumes:
   '/var/log/dockerator/docker/%(DOCKER_NAME)s/':
     destination: /var/log/

@@ -1,0 +1,5 @@
+# defaults file for Dockerator
+
+# Service can be enabled by setting
+# DOCKERATOR_ENABLE="yes"
+DOCKERATOR_ENABLE="no"

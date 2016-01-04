@@ -13,9 +13,16 @@ Containers configuration
 1. Same configuration for all containers (dockerator.yml):
   ```yml
   general:
+    action_start: reload
+    action_stop: remove
     cid_file: '/run/dockerator/%(DOCKER_NAME)s.cid'
+    container_enable: true
     container_restart: always
     docker_url: 'tcp://127.0.0.1:2375'
+  init:
+    action_start: start
+    action_stop: kill
+    container_enable: false
   environment:
     TZ: Europe/Paris
   volumes:
@@ -75,8 +82,8 @@ Usage: dockerator [options] [action]
 Options:
   -h, --help            show this help message and exit
   -a ACTION             Choice action on one or many containers:
-                        create, kill, list, pull, reload, remove, restart,
-                        run, start, status, stop
+                        create, kill, list, pull, reload, remove,
+                        remove_image, restart, run, start, status, stop
   -c CONFFILE           Use configuration file <conffile> instead of
                         /etc/dockerator/dockerator.yml
   --configs-dir=CONFSDIR
@@ -137,25 +144,29 @@ $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 list
 ```
 
 ### pull:
-* All containers:
+* All images configured:
 ```sh
 $ dockerator pull
 ```
-* Containers by image:
+* This image configured:
 ```sh
 $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 pull
 ```
-* Container by name:
+* Image configured for this container:
 ```sh
 $ dockerator -n fpm_foobar pull
 ```
-* Containers by server:
+* All images configured:
 ```sh
 $ dockerator --docker-url=tcp://10.10.10.10:2375 pull
 ```
-* Containers by server and image:
+* This image for this server:
 ```sh
 $ dockerator --docker-url=tcp://10.10.10.10:2375 --image-name=docker-registry.example.org/php-fpm:5.6 pull
+```
+* This image for all configured servers:
+```sh
+$ dockerator -f --image-name=docker-registry.example.org/php-fpm:5.6 pull
 ```
 
 ### reload (stop -> remove -> create -> start):
@@ -184,6 +195,32 @@ $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 remove
 * Container by name:
 ```sh
 $ dockerator -n fpm_foobar remove
+```
+
+### remove_image:
+* All images configured:
+```sh
+$ dockerator remove_image
+```
+* This image configured:
+```sh
+$ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 remove_image
+```
+* Image configured for this container:
+```sh
+$ dockerator -n fpm_foobar remove_image
+```
+* All images configured:
+```sh
+$ dockerator --docker-url=tcp://10.10.10.10:2375 remove_image
+```
+* This image for this server:
+```sh
+$ dockerator --docker-url=tcp://10.10.10.10:2375 --image-name=docker-registry.example.org/php-fpm:5.6 pull
+```
+* This image for all configured servers:
+```sh
+$ dockerator -f --image-name=docker-registry.example.org/php-fpm:5.6 pull
 ```
 
 ### restart (stop -> start):

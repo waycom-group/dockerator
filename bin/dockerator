@@ -1,5 +1,6 @@
-#! /usr/bin/python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# pylint: disable=bad-whitespace
 """
 Dockerator
 """
@@ -53,13 +54,24 @@ ACTION_CHOICES          = ('create',
                            'pull',
                            'reload',
                            'remove',
+                           'remove_image',
                            'restart',
                            'run',
                            'start',
                            'status',
                            'stop')
+
+OVERWRITE_ACTIONS       = {'start':   ('run', 'restart', 'reload'),
+                           'stop':    ('kill', 'remove',),
+                           'reload':  ('restart',),
+                           'restart': ('reload',)}
+
 _CLIENTS                = {}
-_IMAGES_PULLED          = {}
+_IMAGES                 = {'pull':   {},
+                           'remove': {}}
+
+StatusContinue          = object()
+StatusReturn            = object()
 
 
 def argv_parse_check():
@@ -131,12 +143,17 @@ def argv_parse_check():
     return options
 
 
+class DockeratorConfigException(Exception):
+    pass
+
+
 class Dockerator(object):
     def __init__(self, options, default_conf):
         self.options      = options
         self.default_conf = default_conf
         self.confs        = self._build_conf()
         self.cli          = None
+        self.action       = options.action
 
     def set_client(self, cli):
         self.cli = cli
@@ -167,7 +184,7 @@ class Dockerator(object):
                     return
             os.unlink(cidfile)
             return
-        except Exception: # pylint: disable-msg=W0703
+        except Exception: # pylint: disable=W0703
             LOG.exception("unexpected error")
 
     @staticmethod
@@ -266,6 +283,18 @@ class Dockerator(object):
 
         return True
 
+    @staticmethod
+    def _get_action(action, conf):
+        if action not in OVERWRITE_ACTIONS:
+            return action
+
+        action_name = "action_%s" % action
+
+        if conf.get(action_name) not in OVERWRITE_ACTIONS[action]:
+            return action
+
+        return conf[action_name]
+
     @classmethod
     def _conf_params(cls, current, params):
         r   = {}
@@ -314,7 +343,7 @@ class Dockerator(object):
             conf_file = os.path.join(self.options.confsdir, x)
             if not (os.path.isfile(conf_file) \
                and os.access(conf_file, os.R_OK) \
-               and not conf_file.startswith('.')
+               and not conf_file.startswith('.') \
                and conf_file.endswith('.yml')):
                 continue
 
@@ -322,13 +351,13 @@ class Dockerator(object):
                 current_conf = yaml.load(f)
 
             if not isinstance(current_conf, dict):
-                raise ValueError("Invalid configuration file: %r" % conf_file)
-            if not current_conf.has_key('general'):
-                raise ValueError("Missing configuration section 'general' in file: %r" % conf_file)
+                raise DockeratorConfigException("Invalid configuration file: %r" % conf_file)
+            if 'general' not in current_conf:
+                raise DockeratorConfigException("Missing configuration section 'general' in file: %r" % conf_file)
             if not isinstance(current_conf['general'], dict):
-                raise ValueError("Invalid configuration for section 'general' in file: %r" % conf_file)
-            if not current_conf['general'].has_key('name'):
-                raise ValueError("Missing configuration option 'name' for section 'general' in file: %r" % conf_file)
+                raise DockeratorConfigException("Invalid configuration for section 'general' in file: %r" % conf_file)
+            if 'name' not in current_conf['general']:
+                raise DockeratorConfigException("Missing configuration option 'name' for section 'general' in file: %r" % conf_file)
 
             conf_merged = self._conf_merge(current_conf, self.default_conf)
 
@@ -341,22 +370,53 @@ class Dockerator(object):
                 with open(xfile, 'r') as f:
                     conf_merged = self._conf_merge(conf_merged, yaml.load(f))
 
-            r['names'][conf_merged['general']['name']]   = self._conf_params(conf_merged,
-                                                                            {'DOCKER_NAME':    conf_merged['general']['name'],
-                                                                             'container_port': conf_merged['general'].get('container_port', ''),
-                                                                             'host_ip':        conf_merged['general'].get('host_ip', ''),
-                                                                             'host_port':      conf_merged['general'].get('host_port', '')})
+            docker_name = conf_merged['general']['name']
+            image_name  = conf_merged['general']['image']
 
-            if not r['images'].has_key(conf_merged['general']['image']):
-                r['images'][conf_merged['general']['image']] = {}
+            r['names'][docker_name] = self._conf_params(conf_merged,
+                                                        {'DOCKER_NAME':    docker_name,
+                                                         'container_port': conf_merged['general'].get('container_port', ''),
+                                                         'host_ip':        conf_merged['general'].get('host_ip', ''),
+                                                         'host_port':      conf_merged['general'].get('host_port', '')})
 
-            r['images'][conf_merged['general']['image']][conf_merged['general']['name']] = r['names'][conf_merged['general']['name']]
+            if os.getenv('DOCKERATOR_INIT') == 'yes':
+                r['names'][docker_name]['action'] = self._get_action(self.options.action, conf_merged['init'])
+                r['names'][docker_name]['enable'] = bool(conf_merged['init'].get('container_enable', False))
+            else:
+                r['names'][docker_name]['action'] = self._get_action(self.options.action, conf_merged['general'])
+                r['names'][docker_name]['enable'] = bool(conf_merged['general'].get('container_enable', True))
 
-            if not current_conf['general'].has_key('cid_file'):
-                raise ValueError("Missing configuration option 'cid_file' "
-                                 "for section 'general' in file: %r" % conf_file)
+            if image_name not in r['images']:
+                r['images'][image_name] = {}
+
+            r['images'][image_name][docker_name] = r['names'][docker_name]
+
+            if 'cid_file' not in current_conf['general']:
+                raise DockeratorConfigException("Missing configuration option 'cid_file' "
+                                                "for section 'general' in file: %r" % conf_file)
 
         return r
+
+    @staticmethod
+    def register_client(docker_url):
+        if docker_url not in _CLIENTS:
+            _CLIENTS[docker_url] = client.AutoVersionClient(docker_url)
+
+        return _CLIENTS[docker_url]
+
+    def get_current_conf(self):
+        if self.options.name:
+            if self.options.name not in self.confs['names']:
+                LOG.error("Container %r doesn't exist", self.options.name)
+            else:
+                return {self.options.name: self.confs['names'][self.options.name]}
+        elif self.options.imgname:
+            if self.options.imgname not in self.confs['images']:
+                LOG.error("Image %r not found in configuration files", self.options.imgname)
+            else:
+                return self.confs['images'][self.options.imgname]
+        else:
+            return self.confs['names']
 
     @staticmethod
     def _build_create_data(conf):
@@ -366,7 +426,7 @@ class Dockerator(object):
                    'environment': {},
                    'host_config': {}}
 
-        if conf['general'].has_key('container_restart'):
+        if 'container_restart' in conf['general']:
             max_retry = 0
 
             if isinstance(conf['general']['container_restart'], basestring):
@@ -374,13 +434,13 @@ class Dockerator(object):
                     data['host_config']['restart_policy'] = {'MaximumRetryCount': max_retry,
                                                              'name':              conf['general']['container_restart']}
                 else:
-                    raise ValueError("Invalid configuration option 'container_restart' in 'general")
+                    raise DockeratorConfigException("Invalid configuration option 'container_restart' in 'general")
             elif isinstance(conf['general']['container_restart'], dict):
                 data['host_config']['restart_policy'] = {}
-                if conf['general']['container_restart'].has_key('max_retry'):
+                if 'max_retry' in conf['general']['container_restart']:
                     data['host_config']['restart_policy']['MaximumRetryCount'] = int(conf['general']['container_restart']['max_retry'])
 
-                if conf['general']['container_restart'].has_key('name'):
+                if 'name' in conf['general']['container_restart']:
                     if conf['general']['container_restart']['name'] in RESTART_POLICIES:
                         data['host_config']['restart_policy']['Name'] = conf['general']['container_restart']['name']
                     else:
@@ -390,7 +450,7 @@ class Dockerator(object):
                     del data['host_config']['restart_policy']
 
         ports   = set()
-        if conf.has_key('ports') and isinstance(conf['ports'], dict):
+        if 'ports' in conf and isinstance(conf['ports'], dict):
             for key, value in conf['ports'].iteritems():
                 publish = ("%s:%s" % (value, key)).strip(':')
                 if publish:
@@ -417,11 +477,11 @@ class Dockerator(object):
 
         data['environment']['DOCKER_NAME'] = conf['general']['name']
 
-        if conf.has_key('environment') and isinstance(conf['environment'], dict):
+        if 'environment' in conf and isinstance(conf['environment'], dict):
             for key, value in conf['environment'].iteritems():
                 data['environment'][key] = "%s" % value
 
-        if conf.has_key('volumes') and isinstance(conf['volumes'], dict):
+        if 'volumes' in conf and isinstance(conf['volumes'], dict):
             data['volumes']              = []
             data['host_config']['binds'] = {}
 
@@ -462,7 +522,7 @@ class Dockerator(object):
             elif isinstance(conf['general']['docker_cmds'], list):
                 data['command'].extend(conf['general']['docker_cmds'])
             else:
-                raise ValueError("Invalid configuration option 'docker_cmds' for section 'general'")
+                raise DockeratorConfigException("Invalid configuration option 'docker_cmds' in 'general'")
 
         if not data['host_config']:
             del data['host_config']
@@ -510,41 +570,66 @@ class Dockerator(object):
         LOG.info("[%s] Killing", name)
         self.cli.kill(cid)
 
+    def pre_do_list(self):
+        if self.options.imgname:
+            if self.options.imgname not in self.confs['images']:
+                LOG.error("Image %r not found in configuration files", self.options.imgname)
+            else:
+                self.do_list(self.confs['images'][self.options.imgname])
+        else:
+            self.do_list(self.confs['names'])
+
+        return StatusReturn
+
     @staticmethod
     def do_list(confs):
         print "Containers:"
         for name in sorted(confs.iterkeys()):
-            print "    - %s" % name
+            if confs[name]['enable']:
+                enabled = "Yes"
+            else:
+                enabled = "No"
+            print "    - %s (enabled: %r)" % (name, enabled)
+
+    def pre_do_pull(self):
+        if not self.options.imgname:
+            return StatusContinue
+        elif self.options.dockerurl or self.options.force:
+            self.do_pull(None, self.default_conf)
+            return StatusReturn
+
+        return StatusContinue
 
     def do_pull(self, name, conf):
         if self.options.dockerurl:
-           docker_url = self.options.dockerurl
+            docker_url = self.options.dockerurl
         else:
-           docker_url = conf['general']['docker_url']
+            docker_url = conf['general']['docker_url']
 
         if self.options.imgname:
-           image      = self.options.imgname
+            image      = self.options.imgname
         else:
-           image      = conf['general']['image']
+            image      = conf['general']['image']
 
-        if not _CLIENTS.has_key(docker_url):
-            _CLIENTS[docker_url] = client.AutoVersionClient(docker_url)
-        self.set_client(_CLIENTS[docker_url])
+        self.set_client(self.register_client(docker_url))
 
-        if not _IMAGES_PULLED.has_key(docker_url):
-            _IMAGES_PULLED[docker_url] = set()
+        if docker_url not in _IMAGES['pull']:
+            _IMAGES['pull'][docker_url] = set()
 
-        if image in _IMAGES_PULLED[docker_url]:
+        if image in _IMAGES['pull'][docker_url]:
             return
 
         for line in self.cli.pull(image, stream = True):
             data    = json.loads(line)
-            if data.has_key('id'):
+            if 'errorDetail' in data:
+                LOG.error("[%s] %s", docker_url, data['errorDetail']['message'])
+                return
+            elif 'id' in data:
                 LOG.info("[%s] %s: %s", docker_url, data['id'], data['status'])
             else:
                 LOG.info("[%s] %s", docker_url, data['status'])
 
-        _IMAGES_PULLED[docker_url].add(image)
+        _IMAGES['pull'][docker_url].add(image)
 
     def do_reload(self, name, conf):
         self.do_remove(name, conf)
@@ -565,6 +650,37 @@ class Dockerator(object):
                                   force = self.options.force)
         self.unlock_cidfile(conf['general']['cid_file'])
 
+    def pre_do_remove_image(self):
+        if not self.options.imgname:
+            return StatusContinue
+        elif self.options.dockerurl or self.options.force:
+            self.do_remove_image(None, self.default_conf)
+            return StatusReturn
+
+        return StatusContinue
+
+    def do_remove_image(self, name, conf):
+        if self.options.dockerurl:
+            docker_url = self.options.dockerurl
+        else:
+            docker_url = conf['general']['docker_url']
+
+        if self.options.imgname:
+            image      = self.options.imgname
+        else:
+            image      = conf['general']['image']
+
+        self.set_client(self.register_client(docker_url))
+
+        if docker_url not in _IMAGES['remove']:
+            _IMAGES['remove'][docker_url] = set()
+
+        if image in _IMAGES['remove'][docker_url]:
+            return
+
+        self.cli.remove_image(image, force = self.options.force)
+        _IMAGES['remove'][docker_url].add(image)
+
     def do_restart(self, name, conf):
         self.do_stop(name, conf)
         self.do_start(name, conf)
@@ -574,6 +690,7 @@ class Dockerator(object):
         self.do_start(name, conf)
 
     def do_start(self, name, conf):
+
         cid     = self.read_cidfile(conf['general']['cid_file'])
         if not cid:
             LOG.error("Unable to get cid from cid_file: %r", conf['general']['cid_file'])
@@ -603,23 +720,22 @@ class Dockerator(object):
             elif key == 'Ports':
                 ports = []
                 for port in container['Ports']:
-                   binding = ""
-                   if port.get('IP'):
-                       binding += port['IP']
-                   if port.get('PublicPort'):
-                       binding += ":%s" % port['PublicPort']
-                   binding = binding.lstrip(':')
-                   if binding:
-                       binding = "%s->" % binding
+                    binding = ""
+                    if port.get('IP'):
+                        binding += port['IP']
+                    if port.get('PublicPort'):
+                        binding += ":%s" % port['PublicPort']
+                    binding = binding.lstrip(':')
+                    if binding:
+                        binding = "%s->" % binding
 
-                   ports.append("%s%s/%s" % (binding,
-                                             port['PrivatePort'],
-                                             port['Type']))
+                    ports.append("%s%s/%s" % (binding,
+                                              port['PrivatePort'],
+                                              port['Type']))
                 print "    %-10s%s" % (key_view, ", ".join(ports))
             elif key == 'Names':
                 print "    %-10s%s" % (key_view,
-                                       ", ".join(map(lambda x: x.lstrip('/'),
-    	       	                                 container['Names'])))
+                                       ", ".join([x.lstrip('/') for x in container['Names']]))
             else:
                 print "    %-10s%s" % (key_view, container[key])
 
@@ -654,65 +770,49 @@ def main(options):
 
     try:
         root_logger.setLevel(options.loglevel)
-        os.umask(022)
 
-        dockerator   = Dockerator(options, default_conf)
+        dockerator = Dockerator(options, default_conf)
 
         if not dockerator.confs:
             LOG.error("No container configuration found")
             return
 
-        if options.action == 'pull' \
-           and options.imgname \
-           and options.dockerurl:
-            dockerator.do_pull(None, default_conf)
+        if hasattr(dockerator, "pre_do_%s" % dockerator.action):
+            res = getattr(dockerator, "pre_do_%s" % dockerator.action)()
+            if res is StatusReturn:
+                return
+
+        conf       = dockerator.get_current_conf()
+        if not conf:
             return
 
-        if options.action == 'list':
-            if options.imgname:
-                if not dockerator.confs['images'].has_key(options.imgname):
-                    LOG.error("Image %r not found in configuration files", options.imgname)
-                else:
-                    dockerator.do_list(dockerator.confs['images'][options.imgname])
+        for name in sorted(conf.iterkeys()):
+            if not conf[name]['enable'] \
+               and conf[name]['action'] not in ('kill', 'list', 'remove', 'stop'):
+                LOG.debug("Container %r is not enabled", name)
+                continue
+
+            if options.dockerurl:
+                docker_url = options.dockerurl
             else:
-                dockerator.do_list(dockerator.confs['names'])
-            return
+                docker_url = conf[name]['general']['docker_url']
 
-        ref = None
-
-        if options.name:
-            if not dockerator.confs['names'].has_key(options.name):
-                LOG.error("Container %r doesn't exist", options.name)
-            else:
-                ref = {options.name: dockerator.confs['names'][options.name]}
-        elif options.imgname:
-            if not dockerator.confs['images'].has_key(options.imgname):
-                LOG.error("Image %r not found in configuration files", options.imgname)
-            else:
-                ref = dockerator.confs['images'][options.imgname]
-        else:
-            ref = dockerator.confs['names']
-
-        if not ref:
-            return
-
-        for name in sorted(ref.iterkeys()):
-            docker_url = ref[name]['general']['docker_url']
-            if not _CLIENTS.has_key(docker_url):
-                _CLIENTS[docker_url] = client.AutoVersionClient(docker_url)
-            dockerator.set_client(_CLIENTS[docker_url])
-            getattr(dockerator, "do_%s" % options.action)(name, ref[name])
-    except DockerException, e:
-        ret = 7
-        LOG.error("%r", e)
+            dockerator.set_client(dockerator.register_client(docker_url))
+            getattr(dockerator, "do_%s" % conf[name]['action'])(name, conf[name])
     except APIError, e:
-        ret = 6
+        ret = 180
         LOG.error("%r", e.explanation)
+    except DockerException, e:
+        ret = 170
+        LOG.error("%r", e)
+    except DockeratorConfigException, e:
+        ret = 160
+        LOG.error("%r", e)
     except (KeyboardInterrupt, SystemExit):
-        ret = 2
+        ret = 151
         raise
-    except Exception:
-        ret = 1
+    except Exception: # pylint: disable=W0703
+        ret = 150
         LOG.exception("bad things happen")
     finally:
         for cli in _CLIENTS.itervalues():

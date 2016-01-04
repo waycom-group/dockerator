@@ -1,3 +1,17 @@
+dockerator (1.0.5) unstable; urgency=medium
+
+  * Added possibility to remove images. (action: remove_image)
+  * Added section init in configuration file to differentiate actions from
+    command-line and init.d
+  * Added option container_enable
+  * Added possibility to overwrite actions start, stop and restart
+    - start: start / run / restart / reload
+    - stop: stop / kill / remove
+    - reload: reload / restart
+    - restart: restart / reload
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Mon, 04 Jan 2016 09:43:10 +0100
+
 dockerator (1.0.4) unstable; urgency=medium
 
   * Added possibility to pull images. (action: pull)
@@ -28,7 +42,7 @@ dockerator (1.0.1) unstable; urgency=medium
 dockerator (1.0.0-1) unstable; urgency=low
 
   * Fixed initscript, dockerator must start after docker.
-  * Added possibility to load configuration by image. 
+  * Added possibility to load configuration by image.
 
  -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Tue, 29 Dec 2015 16:36:49 +0100
 

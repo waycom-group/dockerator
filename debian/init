@@ -13,13 +13,14 @@
 #set -x
 set -e
 
-SCRIPTNAME="dockerator"
-SCRIPT="/usr/bin/${SCRIPTNAME}"
+NAME="dockerator"
+SCRIPT="/usr/bin/${NAME}"
 EXTRAOPTS=""
+export DOCKERATOR_INIT="yes"
 
 test -x "${SCRIPT}" || exit 0
 
-[ -r "/etc/default/${SCRIPTNAME}" ] && . "/etc/default/${SCRIPTNAME}"
+[ -r "/etc/default/${NAME}" ] && . "/etc/default/${NAME}"
 
 if [ ! -z "${2}" ];
 then
@@ -32,22 +33,28 @@ fi
 
 case "${1}" in
     start)
-        log_daemon_msg "Starting Dockerator" "${SCRIPTNAME}"
+        if [ "${DOCKERATOR_ENABLE}" = "no" ];
+        then
+            log_failure_msg "Not starting Dockerator: disabled via /etc/default/${NAME}"
+            exit 0
+        fi
+
+        log_daemon_msg "Starting Dockerator" "${NAME}"
         ${SCRIPT} -a start ${OPT_NAME} ${EXTRAOPTS}
         log_end_msg ${?}
         ;;
     stop)
-        log_daemon_msg "Stopping Dockerator" "${SCRIPTNAME}"
+        log_daemon_msg "Stopping Dockerator" "${NAME}"
         ${SCRIPT} -a stop ${OPT_NAME} ${EXTRAOPTS}
         log_end_msg ${?}
         ;;
     reload)
-        log_daemon_msg "Reloading Dockerator" "${SCRIPTNAME}"
+        log_daemon_msg "Reloading Dockerator" "${NAME}"
         ${SCRIPT} -a reload ${OPT_NAME} ${EXTRAOPTS}
         log_end_msg ${?}
         ;;
     restart)
-        log_daemon_msg "Restarting Dockerator" "${SCRIPTNAME}"
+        log_daemon_msg "Restarting Dockerator" "${NAME}"
         ${SCRIPT} -a restart ${OPT_NAME} ${EXTRAOPTS}
         log_end_msg ${?}
         ;;
