@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# pylint: disable=bad-whitespace
 """
 Dockerator
 """
+
+# pylint: disable=bad-whitespace
 
 __license__ = """
     Copyright 2015 Waycom <devs@waycom.net>
@@ -420,39 +421,40 @@ class Dockerator(object):
 
     @staticmethod
     def _build_create_data(conf):
-        data    = {'name':        conf['general']['name'],
-                   'image':       conf['general']['image'],
-                   'detach':      True,
-                   'environment': {},
-                   'host_config': {}}
+        data        = {'name':        conf['general']['name'],
+                       'image':       conf['general']['image'],
+                       'detach':      True,
+                       'environment': {}}
+        host_config = {}
 
         if 'container_restart' in conf['general']:
             max_retry = 0
 
             if isinstance(conf['general']['container_restart'], basestring):
                 if conf['general']['container_restart'] in RESTART_POLICIES:
-                    data['host_config']['restart_policy'] = {'MaximumRetryCount': max_retry,
-                                                             'name':              conf['general']['container_restart']}
+                    host_config['restart_policy'] = {'MaximumRetryCount': max_retry,
+                                                     'name':              conf['general']['container_restart']}
                 else:
                     raise DockeratorConfigException("Invalid configuration option 'container_restart' in 'general")
             elif isinstance(conf['general']['container_restart'], dict):
-                data['host_config']['restart_policy'] = {}
+                host_config['restart_policy'] = {}
                 if 'max_retry' in conf['general']['container_restart']:
-                    data['host_config']['restart_policy']['MaximumRetryCount'] = int(conf['general']['container_restart']['max_retry'])
+                    host_config['restart_policy']['MaximumRetryCount'] = int(conf['general']['container_restart']['max_retry'])
 
                 if 'name' in conf['general']['container_restart']:
                     if conf['general']['container_restart']['name'] in RESTART_POLICIES:
-                        data['host_config']['restart_policy']['Name'] = conf['general']['container_restart']['name']
+                        host_config['restart_policy']['Name'] = conf['general']['container_restart']['name']
                     else:
-                        data['host_config']['restart_policy']['Name'] = DEFAULT_RESTART_POLICY
+                        host_config['restart_policy']['Name'] = DEFAULT_RESTART_POLICY
 
-                if not data['host_config']['restart_policy']:
-                    del data['host_config']['restart_policy']
+                if not host_config['restart_policy']:
+                    del host_config['restart_policy']
 
         ports   = set()
         if 'ports' in conf and isinstance(conf['ports'], dict):
             for key, value in conf['ports'].iteritems():
                 publish = ("%s:%s" % (value, key)).strip(':')
+                print publish
                 if publish:
                     ports.add(publish)
 
@@ -464,16 +466,15 @@ class Dockerator(object):
                 ports.add(publish)
 
         if ports:
-            data['ports']                        = []
-            data['host_config']['port_bindings'] = {}
+            host_config['port_bindings'] = {}
+
             for port in ports:
                 binding        = port.rsplit(':', 2)
                 container_port = binding.pop(-1)
-                data['ports'].append(container_port)
-                data['host_config']['port_bindings'][container_port] = binding
-            if not data['ports']:
-                del data['ports']
-                del data['host_config']['port_bindings']
+                host_config['port_bindings'][container_port] = tuple(binding)
+
+            if not host_config['port_bindings']:
+                del host_config['port_bindings']
 
         data['environment']['DOCKER_NAME'] = conf['general']['name']
 
@@ -482,14 +483,12 @@ class Dockerator(object):
                 data['environment'][key] = "%s" % value
 
         if 'volumes' in conf and isinstance(conf['volumes'], dict):
-            data['volumes']              = []
-            data['host_config']['binds'] = {}
+            host_config['binds'] = []
 
             for key, value in conf['volumes'].iteritems():
                 if isinstance(value, basestring):
-                    data['volumes'].append(value)
-                    data['host_config']['binds'][key] = {'bind': value,
-                                                         'mode': DEFAULT_BIND_MODE}
+                    host_config['binds'].append("%s:%s:%s" % (key, value, DEFAULT_BIND_MODE))
+
                 if isinstance(value, dict):
                     if not value.get('destination'):
                         continue
@@ -503,17 +502,13 @@ class Dockerator(object):
 
                     for dest in destination:
                         if not value.get('glob'):
-                            data['volumes'].append(dest)
-                            data['host_config']['binds'][key] = {'bind': dest,
-                                                                 'mode': mode}
+                            host_config['binds'].append("%s:%s:%s" % (key, dest, mode))
                         else:
                             for x in glob.glob(key):
-                                data['volumes'].append(x)
-                                data['host_config']['binds'][x] = {'bind': os.path.join(dest, os.path.basename(x)),
-                                                                   'mode': mode}
-            if not data['volumes']:
-                del data['volumes']
-                del data['host_config']['binds']
+                                host_config['binds'].append("%s:%s:%s" % (x, os.path.join(dest, os.path.basename(x)), mode))
+
+            if not host_config['binds']:
+                del host_config['binds']
 
         if conf['general'].get('docker_cmds'):
             data['command'] = []
@@ -524,8 +519,8 @@ class Dockerator(object):
             else:
                 raise DockeratorConfigException("Invalid configuration option 'docker_cmds' in 'general'")
 
-        if not data['host_config']:
-            del data['host_config']
+        if host_config:
+            data['host_config'] = host_config
 
         return data
 
@@ -537,6 +532,9 @@ class Dockerator(object):
         data    = self._build_create_data(conf)
         if not data:
             return
+
+        if 'host_config' in data:
+            data['host_config'] = self.cli.create_host_config(**data['host_config'])
 
         cid_dir = os.path.dirname(os.path.realpath(conf['general']['cid_file']))
         if not os.access(cid_dir, os.F_OK):

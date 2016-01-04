@@ -2,7 +2,7 @@ Dockerator
 ==========
 
 Dockerator is a tool for configuring and managing Docker containers.
-You can easily have a common configuration for all containers, containers with the same image and for a specific container
+You can easily have a common configuration for all containers, for containers with the same image or for a specific container
 and permit to overload parameters.
 Also, it's possible to start / stop / reload containers with initscript or by command line.
 
