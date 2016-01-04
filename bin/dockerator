@@ -22,6 +22,7 @@ __license__ = """
 
 import glob
 import errno
+import json
 import os
 import sys
 import time
@@ -49,6 +50,7 @@ LOG                     = logging.getLogger(SYSLOG_NAME)
 ACTION_CHOICES          = ('create',
                            'kill',
                            'list',
+                           'pull',
                            'reload',
                            'remove',
                            'restart',
@@ -57,6 +59,7 @@ ACTION_CHOICES          = ('create',
                            'status',
                            'stop')
 _CLIENTS                = {}
+_IMAGES_PULLED          = {}
 
 
 def argv_parse_check():
@@ -73,12 +76,18 @@ def argv_parse_check():
                                    "\t%s" % ', '.join(ACTION_CHOICES)))
     parser.add_option("-c",
                       dest      = 'conffile',
+                      type      = 'string',
                       default   = DEFAULT_CONF_FILE,
                       help      = "Use configuration file <conffile> instead of %default")
     parser.add_option("--configs-dir",
                       dest      = 'confsdir',
+                      type      = 'string',
                       default   = DEFAULT_CONFS_DIR,
                       help      = "Use configuration directory <confsdir> instead of %default")
+    parser.add_option('--docker-url',
+                      dest      = 'dockerurl',
+                      type      = 'string',
+                      help      = "Use a specific Docker server")
     parser.add_option("-f",
                       action    = 'store_true',
                       dest      = 'force',
@@ -86,13 +95,16 @@ def argv_parse_check():
                       help      = "Force")
     parser.add_option("--image-name",
                       dest      = 'imgname',
+                      type      = 'string',
                       help      = "Choice container by image")
     parser.add_option("--image-configs-dir",
                       dest      = 'imgconfsdir',
+                      type      = 'string',
                       default   = DEFAULT_IMG_CONFS_DIR,
                       help      = "Use configuration directory <imgconfsdir> for images instead of %default")
     parser.add_option("-n",
                       dest      = 'name',
+                      type      = 'string',
                       help      = "Choice container by name")
     parser.add_option("--logfile",
                       dest      = 'logfile',
@@ -291,7 +303,8 @@ class Dockerator(object):
         if not os.path.isdir(self.options.confsdir) \
            or not os.access(self.options.confsdir, os.R_OK):
             LOG.warning("Configurations directory doesn't exist "
-                        "or isn't readable. (confsdir: %r)" % self.options.confsdir)
+                        "or isn't readable. (confsdir: %r)",
+                        self.options.confsdir)
             return
 
         r = {'names':  {},
@@ -497,6 +510,69 @@ class Dockerator(object):
         LOG.info("[%s] Killing", name)
         self.cli.kill(cid)
 
+    @staticmethod
+    def do_list(confs):
+        print "Containers:"
+        for name in sorted(confs.iterkeys()):
+            print "    - %s" % name
+
+    def do_pull(self, name, conf):
+        if self.options.dockerurl:
+           docker_url = self.options.dockerurl
+        else:
+           docker_url = conf['general']['docker_url']
+
+        if self.options.imgname:
+           image      = self.options.imgname
+        else:
+           image      = conf['general']['image']
+
+        if not _CLIENTS.has_key(docker_url):
+            _CLIENTS[docker_url] = client.AutoVersionClient(docker_url)
+        self.set_client(_CLIENTS[docker_url])
+
+        if not _IMAGES_PULLED.has_key(docker_url):
+            _IMAGES_PULLED[docker_url] = set()
+
+        if image in _IMAGES_PULLED[docker_url]:
+            return
+
+        for line in self.cli.pull(image, stream = True):
+            data    = json.loads(line)
+            if data.has_key('id'):
+                LOG.info("[%s] %s: %s", docker_url, data['id'], data['status'])
+            else:
+                LOG.info("[%s] %s", docker_url, data['status'])
+
+        _IMAGES_PULLED[docker_url].add(image)
+
+    def do_reload(self, name, conf):
+        self.do_remove(name, conf)
+        self.do_run(name, conf)
+
+    def do_remove(self, name, conf):
+        if not self.options.force:
+            self.do_stop(name, conf)
+
+        cid = self.read_cidfile(conf['general']['cid_file'])
+        if not cid:
+            LOG.warning("Unable to get cid from cid_file: %r",
+                        conf['general']['cid_file'])
+            return
+
+        LOG.info("[%s] Removing", name)
+        self.cli.remove_container(cid,
+                                  force = self.options.force)
+        self.unlock_cidfile(conf['general']['cid_file'])
+
+    def do_restart(self, name, conf):
+        self.do_stop(name, conf)
+        self.do_start(name, conf)
+
+    def do_run(self, name, conf):
+        self.do_create(name, conf)
+        self.do_start(name, conf)
+
     def do_start(self, name, conf):
         cid     = self.read_cidfile(conf['general']['cid_file'])
         if not cid:
@@ -557,38 +633,6 @@ class Dockerator(object):
         LOG.info("[%s] Stopping", name)
         self.cli.stop(cid)
 
-    def do_remove(self, name, conf):
-        if not self.options.force:
-            self.do_stop(name, conf)
-
-        cid = self.read_cidfile(conf['general']['cid_file'])
-        if not cid:
-            LOG.warning("Unable to get cid from cid_file: %r",
-                        conf['general']['cid_file'])
-            return
-
-        LOG.info("[%s] Removing", name)
-        self.cli.remove_container(cid,
-                                  force = self.options.force)
-        self.unlock_cidfile(conf['general']['cid_file'])
-
-    def do_list(confs):
-        print "Containers:"
-        for name in sorted(confs.iterkeys()):
-            print "    - %s" % name
-
-    def do_reload(self, name, conf):
-        self.do_remove(name, conf)
-        self.do_run(name, conf)
-
-    def do_restart(self, name, conf):
-        self.do_stop(name, conf)
-        self.do_start(name, conf)
-
-    def do_run(self, name, conf):
-        self.do_create(name, conf)
-        self.do_start(name, conf)
-
 
 def main(options):
     """
@@ -618,14 +662,20 @@ def main(options):
             LOG.error("No container configuration found")
             return
 
+        if options.action == 'pull' \
+           and options.imgname \
+           and options.dockerurl:
+            dockerator.do_pull(None, default_conf)
+            return
+
         if options.action == 'list':
             if options.imgname:
                 if not dockerator.confs['images'].has_key(options.imgname):
-                    LOG.error("Image %r not found", options.imgname)
+                    LOG.error("Image %r not found in configuration files", options.imgname)
                 else:
-                    do_list(dockerator.confs['images'][options.imgname])
+                    dockerator.do_list(dockerator.confs['images'][options.imgname])
             else:
-                do_list(dockerator.confs['names'])
+                dockerator.do_list(dockerator.confs['names'])
             return
 
         ref = None
@@ -637,7 +687,7 @@ def main(options):
                 ref = {options.name: dockerator.confs['names'][options.name]}
         elif options.imgname:
             if not dockerator.confs['images'].has_key(options.imgname):
-                LOG.error("Image %r not found", options.imgname)
+                LOG.error("Image %r not found in configuration files", options.imgname)
             else:
                 ref = dockerator.confs['images'][options.imgname]
         else:
@@ -650,7 +700,7 @@ def main(options):
             docker_url = ref[name]['general']['docker_url']
             if not _CLIENTS.has_key(docker_url):
                 _CLIENTS[docker_url] = client.AutoVersionClient(docker_url)
-                dockerator.set_client(_CLIENTS[docker_url])
+            dockerator.set_client(_CLIENTS[docker_url])
             getattr(dockerator, "do_%s" % options.action)(name, ref[name])
     except DockerException, e:
         ret = 7

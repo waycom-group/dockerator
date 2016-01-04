@@ -75,13 +75,15 @@ Usage: dockerator [options] [action]
 Options:
   -h, --help            show this help message and exit
   -a ACTION             Choice action on one or many containers:
-                        create, kill, list, reload, remove, restart, run,
-                        start, status, stop
+                        create, kill, list, pull, reload, remove, restart,
+                        run, start, status, stop
   -c CONFFILE           Use configuration file <conffile> instead of
                         /etc/dockerator/dockerator.yml
   --configs-dir=CONFSDIR
                         Use configuration directory <confsdir> instead of
                         /etc/dockerator/conf.d
+  --docker-url=DOCKERURL
+                        Use a specific Docker server
   -f                    Force
   --image-name=IMGNAME  Choice container by image
   --image-configs-dir=IMGCONFSDIR
@@ -133,9 +135,27 @@ $ dockerator list
 ```sh
 $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 list
 ```
+
+### pull:
+* All containers:
+```sh
+$ dockerator pull
+```
+* Containers by image:
+```sh
+$ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 pull
+```
 * Container by name:
 ```sh
-$ dockerator -n fpm_foobar list
+$ dockerator -n fpm_foobar pull
+```
+* Containers by server:
+```sh
+$ dockerator --docker-url=tcp://10.10.10.10:2375 pull
+```
+* Containers by server and image:
+```sh
+$ dockerator --docker-url=tcp://10.10.10.10:2375 --image-name=docker-registry.example.org/php-fpm:5.6 pull
 ```
 
 ### reload (stop -> remove -> create -> start):

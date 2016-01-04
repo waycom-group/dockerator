@@ -1,3 +1,9 @@
+dockerator (1.0.4) unstable; urgency=medium
+
+  * Added possibility to pull images. (action: pull)
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Mon, 04 Jan 2016 00:34:02 +0100
+
 dockerator (1.0.3) unstable; urgency=medium
 
   * Use docker API instead of docker commands.
