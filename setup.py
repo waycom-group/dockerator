@@ -4,13 +4,13 @@
 from setuptools import setup
 
 requirements = [
-    "pyyaml==3.10",
-    "docker-py",
+    "pyyaml>=3.10",
+    "docker-py>=0.5.3",
 ]
 
 setup(
     name                = 'dockerator',
-    version             = '1.0.5-3',
+    version             = '1.0.5-4',
     description         = 'Waycom Dockerator',
     author              = 'Waycom',
     author_email        = 'devs@waycom.net',

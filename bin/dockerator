@@ -401,7 +401,10 @@ class Dockerator(object):
     @staticmethod
     def register_client(docker_url):
         if docker_url not in _CLIENTS:
-            _CLIENTS[docker_url] = client.AutoVersionClient(docker_url)
+            try:
+                _CLIENTS[docker_url] = client.AutoVersionClient(docker_url)
+            except AttributeError:
+                _CLIENTS[docker_url] = client.Client(docker_url)
 
         return _CLIENTS[docker_url]
 
@@ -542,9 +545,7 @@ class Dockerator(object):
         LOG.info("[%s] Creating", name)
 
         container = self.cli.create_container(**data)
-        if not container:
-            return
-        elif not container.get('Id'):
+        if not container or not container.get('Id'):
             LOG.error("[%s] Unable to get container Id from API", name)
             return
 
@@ -583,10 +584,10 @@ class Dockerator(object):
         print "Containers:"
         for name in sorted(confs.iterkeys()):
             if confs[name]['enable']:
-                enabled = "Yes"
+                enabled = "yes"
             else:
-                enabled = "No"
-            print "    - %s (enabled: %r)" % (name, enabled)
+                enabled = "no"
+            print "    - %s (enabled: %s)" % (name, enabled)
 
     def pre_do_pull(self):
         if not self.options.imgname:
