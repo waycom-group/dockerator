@@ -2,9 +2,8 @@ Dockerator
 ==========
 
 Dockerator is a tool for configuring and managing Docker containers.
-You can easily have a common configuration for all containers, for containers with the same image or for a specific container
-and permit to overload parameters.
-Also, it's possible to start / stop / reload containers with initscript or by command line.
+You can easily have a common configuration for all containers, containers with the same image or for a specific container.
+Overloading of parameters is supported and starting / stopping / reloading containers from an initscript or by command line is also made possible by dockerator.
 
 
 Containers configuration
@@ -81,23 +80,23 @@ Usage: dockerator [options] [action]
 
 Options:
   -h, --help            show this help message and exit
-  -a ACTION             Choice action on one or many containers:
+  -a ACTION             Action to execute on one or more containers, must be one of:
                         create, kill, list, pull, reload, remove,
                         remove_image, restart, run, start, status, stop
-  -c CONFFILE           Use configuration file <conffile> instead of
+  -c CONFFILE           Use configuration file <conffile> instead of default
                         /etc/dockerator/dockerator.yml
   --configs-dir=CONFSDIR
-                        Use configuration directory <confsdir> instead of
+                        Use configuration directory <confsdir> instead of default
                         /etc/dockerator/conf.d
   --docker-url=DOCKERURL
                         Use a specific Docker server
   -f                    Force
-  --image-name=IMGNAME  Choice container by image
+  --image-name=IMGNAME  Specify which container to filter by image name
   --image-configs-dir=IMGCONFSDIR
                         Use configuration directory <imgconfsdir> for images
-                        instead of /etc/dockerator/image.d
-  -n NAME               Choice container by name
-  --logfile=LOGFILE     Use log file <logfile> instead of
+                        instead of default /etc/dockerator/image.d
+  -n NAME               Specify which container to filter by name
+  --logfile=LOGFILE     Use log file <logfile> instead of default
                         /var/log/dockerator/dockerator.log
   -l LOGLEVEL           Emit traces with LOGLEVEL details, must be one of:
                         critical, error, warning, info, debug
@@ -110,7 +109,7 @@ Options:
 ```sh
 $ dockerator create
 ```
-* Containers by image:
+* Containers by image name:
 ```sh
 $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 create
 ```
