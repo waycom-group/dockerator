@@ -10,7 +10,7 @@ requirements = [
 
 setup(
     name                = 'dockerator',
-    version             = '1.0.5-2',
+    version             = '1.0.5-3',
     description         = 'Waycom Dockerator',
     author              = 'Waycom',
     author_email        = 'devs@waycom.net',

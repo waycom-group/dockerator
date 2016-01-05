@@ -1,3 +1,9 @@
+dockerator (1.0.5-3) unstable; urgency=medium
+
+  * Bugfix on initscript, docker isn't required. 
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Tue, 05 Jan 2016 06:33:19 +0100
+
 dockerator (1.0.5-2) unstable; urgency=medium
 
   * Clean: removed debug.
