@@ -336,6 +336,7 @@ $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 top
 * Container by name:
 ```sh
 $ dockerator -n fpm_foobar state
+```
 
 
 Installation
