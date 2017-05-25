@@ -1,3 +1,119 @@
+dockerator (1.0.8-2) unstable; urgency=medium
+
+  * Fixed some bugs
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Thu, 25 May 2017 10:17:55 +0200
+
+dockerator (1.0.8-1) unstable; urgency=medium
+
+  * Fixed threading for option top
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Thu, 25 May 2017 08:00:50 +0200
+
+dockerator (1.0.8) unstable; urgency=medium
+
+  * Added scaling features
+  * Added options scale and top
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Tue, 23 May 2017 16:52:39 +0200
+
+dockerator (1.0.7-3) unstable; urgency=medium
+
+  * Changed default docker_url
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Mon, 15 May 2017 15:23:02 +0200
+
+dockerator (1.0.7-2) unstable; urgency=medium
+
+  * Fixed action status
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Tue, 11 Apr 2017 04:47:00 +0200
+
+dockerator (1.0.7-1) unstable; urgency=medium
+
+  * Fixed debian/rules
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Thu, 06 Apr 2017 19:26:19 +0200
+
+dockerator (1.0.7) unstable; urgency=medium
+
+  * Fixed error in configuration merging
+  * Fixed errors with package docker
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Thu, 06 Apr 2017 17:02:03 +0200
+
+dockerator (1.0.6-4) unstable; urgency=medium
+
+  * Renamed package docker-py to docker.
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Tue, 04 Apr 2017 17:03:01 +0200
+
+dockerator (1.0.6-3) unstable; urgency=medium
+
+  * Added option ivolumes.
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Mon, 28 Nov 2016 03:38:11 +0100
+
+dockerator (1.0.6-2) unstable; urgency=medium
+
+  * Fixed pip, use easy_install to install pip
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Fri, 18 Nov 2016 00:59:30 +0100
+
+dockerator (1.0.6-1) unstable; urgency=medium
+
+  * Fixed extra_hosts.
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Mon, 24 Oct 2016 16:00:03 +0200
+
+dockerator (1.0.6) unstable; urgency=medium
+
+  * Added option extra_hosts (add-host)
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Fri, 21 Oct 2016 17:35:40 +0200
+
+dockerator (1.0.5-9) unstable; urgency=medium
+
+  * Fixed exposed ports
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Tue, 27 Sep 2016 23:25:07 +0200
+
+dockerator (1.0.5-8) unstable; urgency=medium
+
+  * Added options:
+    - cpu_shares
+    - network_disabled
+    - labels
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Mon, 04 Jul 2016 18:13:21 +0200
+
+dockerator (1.0.5-7) unstable; urgency=medium
+
+  * Added options:
+    - cpu_group
+    - cpu_period
+    - links
+    - mem_limit
+    - memswap_limit
+    - mem_swappiness
+    - privileged
+    - publish_all_ports
+    - shm_size
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Thu, 23 Jun 2016 10:58:54 +0200
+
+dockerator (1.0.5-6) unstable; urgency=medium
+
+  * Added option network_mode.
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Tue, 12 Apr 2016 00:21:39 +0200
+
+dockerator (1.0.5-5) unstable; urgency=medium
+
+  * Fixed network bindings with unix socket.
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Mon, 15 Feb 2016 09:16:57 +0100
+
 dockerator (1.0.5-4) unstable; urgency=medium
 
   * Fixed incompatibility with some versions of docker-py.

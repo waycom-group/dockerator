@@ -19,12 +19,19 @@ Containers configuration
     container_enable: true
     container_restart: always
     docker_url: 'tcp://127.0.0.1:2375'
+    #scale:
+    #  min: 2
+    #  max: 6
+    #  host: 0.0.0.0
+    #  port: 8000
   init:
     action_start: start
     action_stop: kill
     container_enable: false
   environment:
     TZ: Europe/Paris
+  hosts:
+    'example.org': 93.184.216.34
   volumes:
     '/var/log/dockerator/docker/%(DOCKER_NAME)s/':
       destination: /var/log/
@@ -32,6 +39,10 @@ Containers configuration
     '/var/run/mysqld/':
       destination: /var/run/mysqld/
       mode: rw
+  ivolumes:
+     '/home/foo/':
+      destination: /var/www/bar/
+      mode: ro
   ```
 
 2. Common configuration for containers with the same image (e.g.: image.d/php-fpm_5.6.yml):
@@ -40,7 +51,7 @@ Containers configuration
     host_ip: 127.0.0.1
     container_port: 9000
     image: 'docker-registry.example.org/php-fpm:5.6'
-  volumes:
+  ivolumes:
     '/etc/dockerator/%(DOCKER_NAME)s/config/php_conf.d/*':
       destination: /etc/php5/fpm/conf.d/
       mode: ro
@@ -82,8 +93,9 @@ Usage: dockerator [options] [action]
 Options:
   -h, --help            show this help message and exit
   -a ACTION             Choice action on one or many containers:
-                        create, kill, list, pull, reload, remove,
-                        remove_image, restart, run, start, status, stop
+                        create, kill, list, pull, reload, remove, remove-
+                        image, restart, run, start, state, stats, status,
+                        stop, top
   -c CONFFILE           Use configuration file <conffile> instead of
                         /etc/dockerator/dockerator.yml
   --configs-dir=CONFSDIR
@@ -101,6 +113,8 @@ Options:
                         /var/log/dockerator/dockerator.log
   -l LOGLEVEL           Emit traces with LOGLEVEL details, must be one of:
                         critical, error, warning, info, debug
+  --scale=SCALE         Scaling container (value must be auto or container
+                        name
 ```
 
 ## Actions:
@@ -250,6 +264,10 @@ $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 run
 ```sh
 $ dockerator -n fpm_foobar run
 ```
+* Container scaling 2 containers by name:
+```sh
+$ dockerator -n fpm_foobar --scale=auto:2
+```
 
 ### start:
 * All containers:
@@ -263,6 +281,20 @@ $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 start
 * Container by name:
 ```sh
 $ dockerator -n fpm_foobar start
+```
+
+### state:
+* All containers:
+```sh
+$ dockerator state
+```
+* Containers by image:
+```sh
+$ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 state
+```
+* Container by name:
+```sh
+$ dockerator -n fpm_foobar state
 ```
 
 ### status:
@@ -293,6 +325,19 @@ $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 stop
 $ dockerator -n fpm_foobar stop
 ```
 
+### top:
+* All containers:
+```sh
+$ dockerator top
+```
+* Containers by image:
+```sh
+$ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 top
+```
+* Container by name:
+```sh
+$ dockerator -n fpm_foobar state
+
 
 Installation
 ------------
@@ -304,6 +349,7 @@ Requirements
 ------------
 
 * python2.7
+* bitmath
 * docker-py 1.6.0
 * pyyaml
 

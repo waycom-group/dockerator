@@ -4,7 +4,13 @@ general:
   cid_file: '/run/dockerator/%(DOCKER_NAME)s.cid'
   container_enable: true
   container_restart: always
-  docker_url: 'tcp://127.0.0.1:2375'
+  docker_url: 'unix:///run/docker.sock'
+  #docker_url: 'tcp://127.0.0.1:2375'
+  #scale:
+  #  min: 2
+  #  max: 6
+  #  host: 0.0.0.0
+  #  port: 8000
 init:
   action_start: start
   action_stop: kill

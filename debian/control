@@ -3,7 +3,7 @@ Section: admin
 Priority: optional
 Maintainer: Waycom Dev Team <devs@waycom.net>
 Uploaders: Waycom Dev Team <devs@waycom.net>
-Build-Depends: debhelper (>= 7), dh-python, python (>= 2.7), python-setuptools, python-yaml (>= 3.10)
+Build-Depends: debhelper (>= 7), dh-python, python (>= 2.7), python-setuptools
 Standards-Version: 3.9.4
 XS-Python-Version: >= 2.7
 Homepage: http://www.waycom.net
@@ -12,5 +12,6 @@ Package: dockerator
 Architecture: all
 Homepage: http://www.waycom.net
 XB-Python-Version: ${python:Versions}
-Depends: ${misc:Depends}, ${python:Depends}
+Pre-depends: python-dev (>= 2.7), python-pip, python-setuptools
+Depends: ${misc:Depends}, ${python:Depends}, docker-engine | docker.io
 Description: Waycom Dockerator

@@ -1,16 +1,18 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
 
+import os
 from setuptools import setup
 
-requirements = [
-    "pyyaml>=3.10",
-    "docker-py>=0.5.3",
-]
+requirements = [line.strip() for line in open('requirements.txt', 'r').readlines()]
+version      = '1.0.7'
+
+if os.path.isfile('VERSION'):
+    version = open('VERSION', 'r').readline().strip() or version
 
 setup(
     name                = 'dockerator',
-    version             = '1.0.5-4',
+    version             = version,
     description         = 'Waycom Dockerator',
     author              = 'Waycom',
     author_email        = 'devs@waycom.net',

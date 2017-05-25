@@ -7,7 +7,7 @@ Dockerator
 # pylint: disable=bad-whitespace
 
 __license__ = """
-    Copyright 2015 Waycom <devs@waycom.net>
+    Copyright 2015-2017 Waycom <devs@waycom.net>
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -22,20 +22,34 @@ __license__ = """
     limitations under the License.
 """
 
+import bitmath
+import copy
+import curses
 import glob
 import errno
 import json
 import os
+import re
+import signal
+import socket
 import sys
 import time
+import threading
 import yaml
 
-from docker import client
+try:
+    from docker import APIClient
+except ImportError:
+    from docker import client as APIClient
+
+from collections import OrderedDict
 from docker.errors import APIError, DockerException
 
 import logging
 from logging.handlers import WatchedFileHandler
 from optparse import OptionParser
+
+from types import ModuleType
 
 DEFAULT_BIND_MODE       = 'rw'
 DEFAULT_CONF_FILE       = "/etc/dockerator/dockerator.yml"
@@ -43,11 +57,28 @@ DEFAULT_CONFS_DIR       = os.path.join(os.path.dirname(DEFAULT_CONF_FILE), 'conf
 DEFAULT_IMG_CONFS_DIR   = os.path.join(os.path.dirname(DEFAULT_CONF_FILE), 'image.d')
 DEFAULT_LOG_FILE        = "/var/log/dockerator/dockerator.log"
 
-DEFAULT_RESTART_POLICY	= 'on-failure'
+DEFAULT_RESTART_POLICY  = 'on-failure'
+DEFAULT_SCALE_MIN       = 1
+DEFAULT_SCALE_MAX       = 1
+DEFAULT_SCALE_PORT      = 0
+DEFAULT_SCALE_HOST      = '0.0.0.0'
+
+NAME_SCALE_FORMAT       = '%s.%04d.dr'
+MATCH_NAME_SCALE        = re.compile(r'^([a-zA-Z0-9][a-zA-Z0-9_\.\-]*)\.[0-9]{4}\.dr$').match
+LABEL_NAME_SCALE_FORMAT = '__dockerator.scale.%s.name'
+LABEL_BIND_SCALE_FORMAT = '__dockerator.scale.%s.bind'
+
+CURSES_TOP_COLUMNS      = ("Container", "State", "CPU %", "Mem Usage / Limit", "Mem %", "Net I/O", "Block I/O")
+CURSES_TOP_LINE_FORMAT  = "{0:50} {1:15} {2:10} {3:25} {4:10} {5:20} {6:20}"
+
 RESTART_POLICIES        = ('always', 'on-failure')
+
+NETWORK_MODES           = ('bridge', 'none', 'host')
 
 SYSLOG_NAME             = "Dockerator"
 LOG                     = logging.getLogger(SYSLOG_NAME)
+
+_FROM_INIT              = os.getenv('DOCKERATOR_INIT') == 'yes'
 
 ACTION_CHOICES          = ('create',
                            'kill',
@@ -55,12 +86,15 @@ ACTION_CHOICES          = ('create',
                            'pull',
                            'reload',
                            'remove',
-                           'remove_image',
+                           'remove-image',
                            'restart',
                            'run',
                            'start',
+                           'state',
+                           'stats',
                            'status',
-                           'stop')
+                           'stop',
+                           'top')
 
 OVERWRITE_ACTIONS       = {'start':   ('run', 'restart', 'reload'),
                            'stop':    ('kill', 'remove',),
@@ -130,6 +164,10 @@ def argv_parse_check():
                       choices   = ('critical', 'error', 'warning', 'info', 'debug'),
                       help      = ("Emit traces with LOGLEVEL details, must be one of:\t"
                                    "critical, error, warning, info, debug"))
+    parser.add_option("--scale",
+                      dest      = 'scale',
+                      default   = False,
+                      help      = "Scaling container (value must be auto or container name")
 
     options, args       = parser.parse_args()
 
@@ -152,9 +190,29 @@ class Dockerator(object):
     def __init__(self, options, default_conf):
         self.options      = options
         self.default_conf = default_conf
-        self.confs        = self._build_conf()
-        self.cli          = None
         self.action       = options.action
+        self.cli          = None
+        self.scale        = None
+        self.scale_nb     = 0
+        self._killed      = False
+
+        signal.signal(signal.SIGTERM, self._kill)
+        signal.signal(signal.SIGINT, self._kill)
+
+        if options.scale:
+            self.scale, scale_nb, x = ("%s:1:" % options.scale).split(':', 2)
+            if scale_nb.isdigit():
+                self.scale_nb = int(scale_nb)
+            else:
+                self.scale_nb = 1
+
+        self.confs        = self._build_conf()
+
+    def _kill(self, signum = None, stack_frame = None):
+        self._killed = True
+
+    def is_killed(self):
+        return self._killed
 
     def set_client(self, cli):
         self.cli = cli
@@ -179,7 +237,7 @@ class Dockerator(object):
                                                     'trunc':   False,
                                                     'quiet':   True}):
                 if container['Id'] == cid_instance:
-                    LOG.warning("A cidfile %r already exists (contains cid %d) and an container is running with that cid.",
+                    LOG.warning("A cidfile %r already exists (contains cid %r) and an container is running with that cid.",
                                 cidfile,
                                 cid_instance)
                     return
@@ -225,14 +283,6 @@ class Dockerator(object):
             return False
 
         return True
-
-    @staticmethod
-    def read_cidfile(cidfile):
-        try:
-            with open(cidfile, 'r') as f:
-                return f.read().strip()
-        except Exception:
-            return False
 
     def lock_cidfile(self, cid, cidfile):
         """
@@ -318,16 +368,193 @@ class Dockerator(object):
 
         return r
 
+    @staticmethod
+    def _find_scale_port(host, port):
+        sock = socket.socket()
+
+        while True:
+            if port >= 65500:
+                raise DockeratorConfigException("Unable to find an available port")
+
+            try:
+                sock.bind((host, port))
+            except Exception, e:
+                LOG.debug("Port %r:%r unavailable. ( %r)", host, port, e)
+                port += 1
+            else:
+                port = sock.getsockname()[1]
+                sock.close()
+                time.sleep(0.1)
+                return port
+
     @classmethod
     def _conf_merge(cls, current, default):
         if isinstance(current, dict) and isinstance(default, dict):
-            for key, value in default.iteritems():
-                if key not in current:
+            xcur = current.copy()
+            xdef = default.copy()
+
+            for key, value in xdef.iteritems():
+                if key not in xcur:
                     current[key] = value
                 else:
-                    current[key] = cls._conf_merge(current[key], value)
+                    current[key] = cls._conf_merge(xcur[key], value)
 
         return current
+
+    def _build_conf_scale(self, name, docker_url, conf):
+        label_name = LABEL_NAME_SCALE_FORMAT % name
+        label_bind = LABEL_BIND_SCALE_FORMAT % name
+
+        r = {'min':        DEFAULT_SCALE_MIN,
+             'max':        DEFAULT_SCALE_MAX,
+             'count':      0,
+             'containers': {}}
+
+        host = None
+        port = None
+
+        for x in ('min', 'max'):
+            if x not in conf['scale']:
+                continue
+
+            try:
+                r[x] = int(conf['scale'][x])
+            except ValueError, e:
+                raise DockeratorConfigException("Invalid configuration option %r in 'scale' (error: %r)" % (x, e))
+
+        if r['min'] < 2:
+            r['min'] = 1
+
+        if r['min'] > r['max']:
+            raise DockeratorConfigException("Invalid 'min' or 'max' value in 'scale' (min: %r, max: %r)"
+                                            % (r['min'],
+                                               r['max']))
+
+        if 'port' in conf['scale']:
+            try:
+                port = int(conf['scale']['port'])
+            except ValueError, e:
+                raise DockeratorConfigException("Invalid configuration option 'port' in 'scale' (error: %r)" % e)
+
+            if not 1024 < port < 65500:
+                raise DockeratorConfigException("Invalid 'port' value in 'scale' (port: %r)" % r['port'])
+
+        if port is None:
+            port = DEFAULT_SCALE_PORT
+
+        if 'host' not in conf['scale']:
+            host = DEFAULT_SCALE_HOST
+        else:
+            host = conf['scale']['host']
+
+        self.set_client(self.register_client(docker_url))
+
+        r['count'] = len(self.cli.containers(**{'all': True, 'filters': {'label': label_name}}))
+
+        for n in range(r['min'] - 1, r['max']):
+            sname = NAME_SCALE_FORMAT % (name, n)
+            r['containers'][sname] = {'exists': False,
+                                      'state':  None,
+                                      'host':   host,
+                                      'number': n,
+                                      'name':   sname,
+                                      'conf':   copy.deepcopy(conf)}
+
+            ref = r['containers'][sname]
+
+            for x in self.cli.containers(**{'all': True, 'filters': {'name': sname}}):
+                if 'Names' not in x or "/%s" % sname not in x['Names']:
+                    continue
+
+                ref['exists'] = True
+                ref['state']  = x['State']
+
+                ref['conf']['general']['name'] = sname
+
+                if 'Labels' in x and label_bind in x['Labels']:
+                    ref['bind'] = x['Labels'][label_bind]
+                    ref['host'], ref['port'] = ref['bind'].split(':', 1)
+                    ref['conf']['general']['host_ip'] = ref['host']
+                    ref['conf']['general']['host_port'] = ref['port']
+
+                if 'labels' not in ref['conf']['general']:
+                    ref['conf']['general']['labels'] = {}
+
+                ref['conf']['general']['labels'][label_name] = name
+                ref['conf']['general']['labels'][label_bind] = ref['bind']
+
+                ref['conf'] = self._build_conf_end(sname, ref['conf'])
+
+            if self.action not in ('create', 'reload', 'restart', 'run', 'start'):
+                continue
+
+            if not port:
+                sport = port
+            else:
+                sport = port + n
+
+            sport = self._find_scale_port(ref['host'], sport)
+
+            if not sport:
+                LOG.warning("Unable to find an available port for %r", port)
+                break
+
+            if port:
+                port += 1
+
+            ref['port'] = sport
+            ref['bind'] = "%s:%s" % (ref['host'], ref['port'])
+            ref['conf']['general']['name'] = sname
+            ref['conf']['general']['host_ip'] = ref['host']
+            ref['conf']['general']['host_port'] = ref['port']
+
+            if 'labels' not in ref['conf']['general']:
+                ref['conf']['general']['labels'] = {}
+
+            ref['conf']['general']['labels'][label_name] = name
+            ref['conf']['general']['labels'][label_bind] = ref['bind']
+
+            ref['conf'] = self._build_conf_end(sname, ref['conf'])
+
+        conf['scale'] = r
+
+    def _build_conf_merged(self, current_conf, default_conf):
+        r = self._conf_merge(current_conf, default_conf)
+
+        if r['general'].get('image_cfg_file'):
+            if not os.access(r['general']['image_cfg_file'], os.F_OK):
+                xfile = os.path.join(self.options.imgconfsdir, r['general']['image_cfg_file'])
+            else:
+                xfile = r['general']['image_cfg_file']
+
+            with open(xfile, 'r') as f:
+                r = self._conf_merge(r, yaml.load(f))
+
+        if self.options.dockerurl:
+            r['docker_url'] = self.options.dockerurl
+        else:
+            r['docker_url'] = r['general']['docker_url']
+
+        return r
+
+    def _build_conf_end(self, name, conf):
+        r = self._conf_params(conf,
+                              {'DOCKER_NAME':    name,
+                               'hostname':       socket.gethostname(),
+                               'container_port': conf['general'].get('container_port', ''),
+                               'host_ip':        conf['general'].get('host_ip', ''),
+                               'host_port':      conf['general'].get('host_port', '')})
+
+        r['_stats'] = {}
+
+        if _FROM_INIT == 'yes':
+            r['action'] = self._get_action(self.options.action, conf['init'])
+            r['enable'] = bool(conf['init'].get('container_enable', False))
+        else:
+            r['action'] = self._get_action(self.options.action, conf['general'])
+            r['enable'] = bool(conf['general'].get('container_enable', True))
+
+        return r
 
     def _build_conf(self):
         if not os.path.isdir(self.options.confsdir) \
@@ -348,6 +575,8 @@ class Dockerator(object):
                and conf_file.endswith('.yml')):
                 continue
 
+            default_conf = copy.deepcopy(self.default_conf)
+
             with open(conf_file, 'r') as f:
                 current_conf = yaml.load(f)
 
@@ -360,32 +589,19 @@ class Dockerator(object):
             if 'name' not in current_conf['general']:
                 raise DockeratorConfigException("Missing configuration option 'name' for section 'general' in file: %r" % conf_file)
 
-            conf_merged = self._conf_merge(current_conf, self.default_conf)
-
-            if conf_merged['general'].get('image_cfg_file'):
-                if not os.access(conf_merged['general']['image_cfg_file'], os.F_OK):
-                    xfile = os.path.join(self.options.imgconfsdir, conf_merged['general']['image_cfg_file'])
-                else:
-                    xfile = conf_merged['general']['image_cfg_file']
-
-                with open(xfile, 'r') as f:
-                    conf_merged = self._conf_merge(conf_merged, yaml.load(f))
+            conf_merged = self._build_conf_merged(current_conf, default_conf)
 
             docker_name = conf_merged['general']['name']
             image_name  = conf_merged['general']['image']
 
-            r['names'][docker_name] = self._conf_params(conf_merged,
-                                                        {'DOCKER_NAME':    docker_name,
-                                                         'container_port': conf_merged['general'].get('container_port', ''),
-                                                         'host_ip':        conf_merged['general'].get('host_ip', ''),
-                                                         'host_port':      conf_merged['general'].get('host_port', '')})
+            conf_merged['general']['realname'] = docker_name
 
-            if os.getenv('DOCKERATOR_INIT') == 'yes':
-                r['names'][docker_name]['action'] = self._get_action(self.options.action, conf_merged['init'])
-                r['names'][docker_name]['enable'] = bool(conf_merged['init'].get('container_enable', False))
-            else:
-                r['names'][docker_name]['action'] = self._get_action(self.options.action, conf_merged['general'])
-                r['names'][docker_name]['enable'] = bool(conf_merged['general'].get('container_enable', True))
+            if self.scale and (not self.options.name or self.options.name == docker_name):
+                if 'scale' not in conf_merged or not isinstance(conf_merged['scale'], dict):
+                    raise DockeratorConfigException("Missing configuration section 'scale' in file: %r" % conf_file)
+                self._build_conf_scale(docker_name, conf_merged['docker_url'], conf_merged)
+
+            r['names'][docker_name] = self._build_conf_end(docker_name, conf_merged)
 
             if image_name not in r['images']:
                 r['images'][image_name] = {}
@@ -400,143 +616,397 @@ class Dockerator(object):
 
     @staticmethod
     def register_client(docker_url):
-        if docker_url not in _CLIENTS:
+        if docker_url in _CLIENTS:
+            return _CLIENTS[docker_url]
+
+        if isinstance(APIClient, ModuleType):
             try:
-                _CLIENTS[docker_url] = client.AutoVersionClient(docker_url)
+                _CLIENTS[docker_url] = APIClient.AutoVersionClient(docker_url)
             except AttributeError:
-                _CLIENTS[docker_url] = client.Client(docker_url)
+                _CLIENTS[docker_url] = APIClient.Client(docker_url)
+        else:
+            _CLIENTS[docker_url] = APIClient(docker_url)
 
         return _CLIENTS[docker_url]
+
+    def get_scale_conf(self, name, conf):
+        r       = OrderedDict()
+
+        exists  = False
+        reverse = False
+        recheck = False
+        state   = False
+        states  = (None,)
+
+        if self.action in ('kill', 'stop'):
+            exists  = True
+            reverse = True
+            recheck = self.scale == 'auto'
+            states  = ('running', 'paused',)
+        elif self.action in ('remove',):
+            exists  = True
+            reverse = True
+            recheck = self.scale == 'auto'
+            states  = ('exited', 'dead', 'paused',)
+        elif self.action in ('reload', 'restart'):
+            exists  = True
+            reverse = False
+            recheck = self.scale == 'auto'
+            states  = ('exited', 'dead', 'paused',)
+        elif self.action in ('stats', 'status', 'top'):
+            exists  = True
+            state   = True
+
+        xdict = copy.deepcopy(conf['containers'])
+        xsort = sorted(xdict.iterkeys(), reverse = reverse)
+        nb    = 0
+
+        if recheck:
+            for xstate in states:
+                for container in xsort:
+                    if not container in xdict:
+                        continue
+                    ref = xdict[container]
+                    if ref['exists'] == exists and ref['state'] == xstate:
+                        r[ref['name']] = ref['conf']
+                        del xdict[container]
+                        nb += 1
+                        if nb == self.scale_nb and not state:
+                            return r
+
+        for container in xsort:
+            if not container in xdict:
+                continue
+            ref = xdict[container]
+            if self.scale in (container, 'auto') and ref['exists'] == exists:
+                r[ref['name']] = ref['conf']
+                del xdict[container]
+                nb += 1
+                if nb == self.scale_nb and not state:
+                    return r
+
+        if self.options.force and self.action in ('kill', 'reload', 'run'):
+            for container in xsort:
+                if not container in xdict:
+                    continue
+                ref = xdict[container]
+                if self.scale in (container, 'auto'):
+                    r[ref['name']] = ref['conf']
+                    del xdict[container]
+                    nb += 1
+                    if nb == self.scale_nb and not state:
+                        return r
+
+        if r:
+            return r
+
+        if self.scale == 'auto':
+            flog = LOG.warning
+        else:
+            flog = LOG.debug
+
+        flog("No scaling container available for %r", name)
 
     def get_current_conf(self):
         if self.options.name:
             if self.options.name not in self.confs['names']:
                 LOG.error("Container %r doesn't exist", self.options.name)
-            else:
+                return
+            if not self.scale:
                 return {self.options.name: self.confs['names'][self.options.name]}
+
+            return self.get_scale_conf(self.options.name,
+                                       self.confs['names'][self.options.name]['scale'])
         elif self.options.imgname:
             if self.options.imgname not in self.confs['images']:
                 LOG.error("Image %r not found in configuration files", self.options.imgname)
-            else:
+            elif not self.scale:
                 return self.confs['images'][self.options.imgname]
+            else:
+                conf = {}
+                for name, container in self.confs['names'].iteritems():
+                    scale_conf = self.get_scale_conf(name, container['scale'])
+                    if scale_conf:
+                        conf.update(scale_conf)
+                return conf
         else:
-            return self.confs['names']
+            if not self.scale:
+                return self.confs['names']
+
+            conf = {}
+            for name, container in self.confs['names'].iteritems():
+                scale_conf = self.get_scale_conf(name, container['scale'])
+                if scale_conf:
+                    conf.update(scale_conf)
+
+            return conf
 
     @staticmethod
-    def _build_create_data(conf):
-        data        = {'name':        conf['general']['name'],
-                       'image':       conf['general']['image'],
-                       'detach':      True,
-                       'environment': {}}
-        host_config = {}
+    def _build_param_hc_restart_policy(container_restart):
+        if isinstance(container_restart, basestring):
+            if container_restart in RESTART_POLICIES:
+                return {'MaximumRetryCount': 0,
+                        'name':              container_restart}
+            else:
+                raise DockeratorConfigException("Invalid configuration option 'container_restart' in 'general'")
+        elif isinstance(container_restart, dict):
+            r = {}
 
-        if 'container_restart' in conf['general']:
-            max_retry = 0
+            if 'max_retry' in container_restart:
+                r['MaximumRetryCount'] = int(container_restart['max_retry'])
 
-            if isinstance(conf['general']['container_restart'], basestring):
-                if conf['general']['container_restart'] in RESTART_POLICIES:
-                    host_config['restart_policy'] = {'MaximumRetryCount': max_retry,
-                                                     'name':              conf['general']['container_restart']}
+            if 'name' in container_restart:
+                if container_restart['name'] in RESTART_POLICIES:
+                    r['Name'] = container_restart['name']
                 else:
-                    raise DockeratorConfigException("Invalid configuration option 'container_restart' in 'general")
-            elif isinstance(conf['general']['container_restart'], dict):
-                host_config['restart_policy'] = {}
-                if 'max_retry' in conf['general']['container_restart']:
-                    host_config['restart_policy']['MaximumRetryCount'] = int(conf['general']['container_restart']['max_retry'])
+                    r['Name'] = DEFAULT_RESTART_POLICY
 
-                if 'name' in conf['general']['container_restart']:
-                    if conf['general']['container_restart']['name'] in RESTART_POLICIES:
-                        host_config['restart_policy']['Name'] = conf['general']['container_restart']['name']
-                    else:
-                        host_config['restart_policy']['Name'] = DEFAULT_RESTART_POLICY
+            return r
 
-                if not host_config['restart_policy']:
-                    del host_config['restart_policy']
+    @staticmethod
+    def _build_param_hc_network_mode(network_mode):
+        if not isinstance(network_mode, basestring):
+            raise DockeratorConfigException("Invalid type for option 'network_mode' in 'general'")
+        elif network_mode in NETWORK_MODES:
+            return network_mode
+        elif network_mode.startswith('container:'):
+            return network_mode
+        else:
+            raise DockeratorConfigException("Invalid configuration option 'network_mode' in 'general'")
 
+    @staticmethod
+    def _build_param_hc_host(hosts):
+        r = {}
+
+        for key, value in hosts.iteritems():
+            if isinstance(key, basestring) \
+               and isinstance(value, basestring):
+                r[key] = value
+
+        return r
+
+    @staticmethod
+    def _build_param_hc_port(conf):
         ports   = set()
+
         if 'ports' in conf and isinstance(conf['ports'], dict):
             for key, value in conf['ports'].iteritems():
-                publish = ("%s:%s" % (value, key)).strip(':')
+                publish = ("%s:%s" % (value or '', key)).strip(':')
                 if publish:
                     ports.add(publish)
 
         if not ports:
-            publish = ("%s:%s:%s" % (conf['general'].get('host_ip', ''),
-                                     conf['general'].get('host_port', ''),
-                                     conf['general'].get('container_port', ''))).strip(':')
+            publish = ("%s:%s:%s" % (conf['general'].get('host_ip') or '',
+                                     conf['general'].get('host_port') or '',
+                                     conf['general'].get('container_port') or '')).strip(':')
             if publish:
                 ports.add(publish)
 
-        if ports:
-            host_config['port_bindings'] = {}
+        if not ports:
+            return
 
-            for port in ports:
-                binding        = port.rsplit(':', 2)
-                container_port = binding.pop(-1)
-                host_config['port_bindings'][container_port] = tuple(binding)
+        r = {}
 
-            if not host_config['port_bindings']:
-                del host_config['port_bindings']
+        for port in ports:
+            binding        = port.rsplit(':', 2)
+            container_port = binding.pop(-1)
+            if binding:
+                r[container_port] = tuple(binding)
+            else:
+                r[container_port] = []
 
-        data['environment']['DOCKER_NAME'] = conf['general']['name']
+        return r
+
+    @staticmethod
+    def _build_param_hc_volumes(volumes, ivolume = False):
+        r = []
+
+        for key, value in volumes.iteritems():
+            if isinstance(value, basestring):
+                if ivolume and not os.path.exists(key):
+                    continue
+                r.append("%s:%s:%s" % (key, value, DEFAULT_BIND_MODE))
+
+            if not isinstance(value, dict):
+                continue
+
+            if not value.get('destination'):
+                LOG.warning("Missing destination for volume: %r", key)
+                continue
+
+            mode = value.get('mode') or DEFAULT_BIND_MODE
+
+            if not isinstance(value['destination'], list):
+                destination = [value['destination']]
+            else:
+                destination = list(value['destination'])
+
+            for dest in destination:
+                if not value.get('glob'):
+                    if ivolume and not os.path.exists(key):
+                        continue
+                    r.append("%s:%s:%s" % (key, dest, mode))
+                else:
+                    for x in glob.glob(key):
+                        r.append("%s:%s:%s" % (x, os.path.join(dest, os.path.basename(x)), mode))
+
+        return r
+
+    @staticmethod
+    def _build_param_host_config(conf):
+        host_config = {}
+
+        if 'container_restart' in conf['general']:
+            container_restart = Dockerator._build_param_hc_restart_policy(conf['general']['container_restart'])
+            if container_restart:
+                host_config['restart_policy'] = container_restart
+
+        if 'links' in conf['general']:
+            links = Dockerator._build_param_links(conf['general']['links'])
+            if links:
+                host_config['links'] = links
+
+        for x in ('mem_limit', 'memswap_limit', 'shm_size'):
+            if x not in conf['general']:
+                continue
+            elif not isinstance(conf['general'][x], (int, str)):
+                raise DockeratorConfigException("Invalid configuration option %r in 'general'" % x)
+            else:
+                host_config[x] = conf['general'][x]
+
+        for x in ('publish_all_ports', 'privileged'):
+            if x in conf['general']:
+                host_config[x] = bool(conf['general'][x])
+
+        for x in ('cpu_group', 'cpu_period'):
+            if x in conf['general']:
+                host_config[x] = int(conf['general'][x])
+
+        if 'network_mode' in conf['general']:
+            host_config['network_mode'] = Dockerator._build_param_hc_network_mode(conf['general']['network_mode'])
+
+        if 'ports' in conf and isinstance(conf['ports'], dict):
+            ports = Dockerator._build_param_hc_port(conf)
+            if ports:
+                host_config['port_bindings'] = ports
+
+        if 'hosts' in conf and isinstance(conf['hosts'], dict):
+            extra_hosts = Dockerator._build_param_hc_host(conf['hosts'])
+            if extra_hosts:
+                host_config['extra_hosts'] = extra_hosts
+
+        host_config['binds'] = []
+
+        if 'volumes' in conf and isinstance(conf['volumes'], dict):
+            host_config['binds'].extend(Dockerator._build_param_hc_volumes(conf['volumes'], False))
+
+        if 'ivolumes' in conf and isinstance(conf['ivolumes'], dict):
+            host_config['binds'].extend(Dockerator._build_param_hc_volumes(conf['ivolumes'], True))
+
+        if not host_config['binds']:
+            del host_config['binds']
+
+        return host_config
+
+    @staticmethod
+    def _build_param_links(links):
+        if isinstance(links, dict):
+            return links.copy()
+
+        raise DockeratorConfigException("Invalid configuration option 'links' in 'general'")
+
+    @staticmethod
+    def _build_param_labels(labels):
+        if isinstance(labels, dict):
+            return labels.copy()
+
+        raise DockeratorConfigException("Invalid configuration option 'labels' in 'general'")
+
+    @staticmethod
+    def _build_param_command(docker_cmds):
+        r = []
+
+        if isinstance(docker_cmds, basestring):
+            r.append(docker_cmds)
+        elif isinstance(docker_cmds, list):
+            r.extend(docker_cmds)
+        else:
+            raise DockeratorConfigException("Invalid configuration option 'docker_cmds' in 'general'")
+
+        return r
+
+    @staticmethod
+    def _build_create_params(conf):
+        params      = {'name':        conf['general']['name'],
+                       'image':       conf['general']['image'],
+                       'detach':      True,
+                       'environment': {}}
+
+        host_config = Dockerator._build_param_host_config(conf)
+        if host_config:
+            params['host_config'] = host_config
+
+        if 'cpu_shares' in conf['general']:
+            params['cpu_shares'] = int(conf['general']['cpu_shares'])
+
+        params['environment']['DOCKER_NAME'] = conf['general']['name']
 
         if 'environment' in conf and isinstance(conf['environment'], dict):
             for key, value in conf['environment'].iteritems():
-                data['environment'][key] = "%s" % value
+                params['environment'][key] = "%s" % value
 
-        if 'volumes' in conf and isinstance(conf['volumes'], dict):
-            host_config['binds'] = []
+        if 'labels' in conf['general']:
+            labels = Dockerator._build_param_labels(conf['general']['labels'])
+            if labels:
+                params['labels'] = labels
 
-            for key, value in conf['volumes'].iteritems():
-                if isinstance(value, basestring):
-                    host_config['binds'].append("%s:%s:%s" % (key, value, DEFAULT_BIND_MODE))
-
-                if isinstance(value, dict):
-                    if not value.get('destination'):
-                        continue
-
-                    mode = value.get('mode') or DEFAULT_BIND_MODE
-
-                    if not isinstance(value['destination'], list):
-                        destination = [value['destination']]
-                    else:
-                        destination = list(value['destination'])
-
-                    for dest in destination:
-                        if not value.get('glob'):
-                            host_config['binds'].append("%s:%s:%s" % (key, dest, mode))
-                        else:
-                            for x in glob.glob(key):
-                                host_config['binds'].append("%s:%s:%s" % (x, os.path.join(dest, os.path.basename(x)), mode))
-
-            if not host_config['binds']:
-                del host_config['binds']
+        if 'network_disabled' in conf['general']:
+            params['network_disabled'] = bool(conf['general']['network_disabled'])
 
         if conf['general'].get('docker_cmds'):
-            data['command'] = []
-            if isinstance(conf['general']['docker_cmds'], basestring):
-                data['command'].append(conf['general']['docker_cmds'])
-            elif isinstance(conf['general']['docker_cmds'], list):
-                data['command'].extend(conf['general']['docker_cmds'])
-            else:
-                raise DockeratorConfigException("Invalid configuration option 'docker_cmds' in 'general'")
+            command = Dockerator._build_param_command(conf['general']['docker_cmds'])
+            if command:
+                params['command'] = command
 
-        if host_config:
-            data['host_config'] = host_config
+        return params
 
-        return data
+    def _get_state(self, xid):
+        res = self.cli.inspect_container(xid)
+        if not res:
+            return
+
+        return res['State']['Status']
+
+    def _find_container(self, name, conf):
+        containers = self.cli.containers(**{'all':     True,
+                                            'trunc':   False,
+                                            'filters': {'name': name}})
+
+        if not containers:
+            LOG.warning("Container %r not found", name)
+            return
+
+        for c in containers:
+            if '/%s' % name in c['Names']:
+                return c
 
     def do_create(self, name, conf):
-        if self.cli.containers(**{'all': True, 'filters': {'name': name}}):
-            LOG.error("Container %r already exists", name)
+        for x in self.cli.containers(**{'all': True, 'filters': {'name': name}}):
+            if 'Names' in x and "/%s" % name in x['Names']:
+                LOG.error("Container %r already exists", name)
+                return
+
+        params = self._build_create_params(conf)
+        if not params:
             return
 
-        data    = self._build_create_data(conf)
-        if not data:
-            return
+        if 'host_config' in params:
+            params['host_config'] = self.cli.create_host_config(**params['host_config'])
 
-        if 'host_config' in data:
-            data['host_config'] = self.cli.create_host_config(**data['host_config'])
+            if 'PortBindings' in params['host_config']:
+                params['ports'] = []
+                for port in params['host_config']['PortBindings'].iterkeys():
+                    params['ports'].append(tuple(port.split('/', 1)))
 
         cid_dir = os.path.dirname(os.path.realpath(conf['general']['cid_file']))
         if not os.access(cid_dir, os.F_OK):
@@ -544,7 +1014,8 @@ class Dockerator(object):
 
         LOG.info("[%s] Creating", name)
 
-        container = self.cli.create_container(**data)
+        container = self.cli.create_container(**params)
+
         if not container or not container.get('Id'):
             LOG.error("[%s] Unable to get container Id from API", name)
             return
@@ -560,13 +1031,8 @@ class Dockerator(object):
         return container
 
     def do_kill(self, name, conf):
-        cid     = self.read_cidfile(conf['general']['cid_file'])
-        if not cid:
-            LOG.error("Unable to get cid from cid_file: %r", conf['general']['cid_file'])
-            return
-
         LOG.info("[%s] Killing", name)
-        self.cli.kill(cid)
+        self.cli.kill(name)
 
     def pre_do_list(self):
         if self.options.imgname:
@@ -599,15 +1065,12 @@ class Dockerator(object):
         return StatusContinue
 
     def do_pull(self, name, conf):
-        if self.options.dockerurl:
-            docker_url = self.options.dockerurl
-        else:
-            docker_url = conf['general']['docker_url']
+        docker_url = conf['docker_url']
 
         if self.options.imgname:
-            image      = self.options.imgname
+            image = self.options.imgname
         else:
-            image      = conf['general']['image']
+            image = conf['general']['image']
 
         self.set_client(self.register_client(docker_url))
 
@@ -637,15 +1100,13 @@ class Dockerator(object):
         if not self.options.force:
             self.do_stop(name, conf)
 
-        cid = self.read_cidfile(conf['general']['cid_file'])
-        if not cid:
-            LOG.warning("Unable to get cid from cid_file: %r",
-                        conf['general']['cid_file'])
-            return
-
         LOG.info("[%s] Removing", name)
-        self.cli.remove_container(cid,
-                                  force = self.options.force)
+        try:
+            self.cli.remove_container(name,
+                                      force = self.options.force)
+        except Exception, e:
+            if not self.options.force:
+                raise
         self.unlock_cidfile(conf['general']['cid_file'])
 
     def pre_do_remove_image(self):
@@ -658,15 +1119,12 @@ class Dockerator(object):
         return StatusContinue
 
     def do_remove_image(self, name, conf):
-        if self.options.dockerurl:
-            docker_url = self.options.dockerurl
-        else:
-            docker_url = conf['general']['docker_url']
+        docker_url = conf['docker_url']
 
         if self.options.imgname:
-            image      = self.options.imgname
+            image = self.options.imgname
         else:
-            image      = conf['general']['image']
+            image = conf['general']['image']
 
         self.set_client(self.register_client(docker_url))
 
@@ -688,28 +1146,40 @@ class Dockerator(object):
         self.do_start(name, conf)
 
     def do_start(self, name, conf):
+        LOG.info("[%s] Starting", name)
+        self.cli.start(name)
 
-        cid     = self.read_cidfile(conf['general']['cid_file'])
-        if not cid:
-            LOG.error("Unable to get cid from cid_file: %r", conf['general']['cid_file'])
+    def do_state(self, name, conf):
+        container = self._find_container(name, conf)
+
+        if not container:
             return
 
-        LOG.info("[%s] Starting", name)
-        self.cli.start(cid)
+        state = self._get_state(container['Id'])
+        if not state:
+            LOG.warning("Unable to fetch container information: %r", name)
+
+        if self.options.name and not self.scale:
+            print state
+        else:
+            print "%s: %s" % (name, state)
+
+    def do_stats(self, name, conf):
+        container = self._find_container(name, conf)
+
+        if not container:
+            return
+
+        print self.cli.stats(container['Id'], stream = False)
 
     def do_status(self, name, conf):
-        containers = self.cli.containers(**{'all':     True,
-                                            'trunc':   False,
-                                            'filters': {'name': name}})
+        container = self._find_container(name, conf)
 
-        if not containers:
-            LOG.warning("Container %r not found", name)
+        if not container:
             return
 
-        container  = containers.pop(0)
-
         print "Container: %r" % name
-        for key in ('Id', 'Image', 'Command', 'Created', 'Status', 'Ports', 'Names'):
+        for key in ('Id', 'Image', 'Command', 'Created', 'Status', 'State', 'Ports', 'Names'):
             key_view = "%s:" % key
             if key == 'Created':
                 print "    %-10s%s" % (key_view,
@@ -738,14 +1208,150 @@ class Dockerator(object):
                 print "    %-10s%s" % (key_view, container[key])
 
     def do_stop(self, name, conf):
-        cid = self.read_cidfile(conf['general']['cid_file'])
-        if not cid:
-            LOG.warning("Unable to get cid from cid_file: %r",
-                        conf['general']['cid_file'])
+        LOG.info("[%s] Stopping", name)
+        self.cli.stop(name)
+
+    @staticmethod
+    def _calc_cpu_percent(cur_stats, pre_stats):
+        r = 0.0
+
+        if not cur_stats.get('system_cpu_usage'):
+           return r
+
+        if not pre_stats or not pre_stats.get('system_cpu_usage'):
+           return r
+
+        if pre_stats:
+            cpu_delta = float(cur_stats['cpu_usage']['total_usage']) - float(pre_stats['cpu_usage']['total_usage'])
+            sys_delta = float(cur_stats['system_cpu_usage']) - float(pre_stats['system_cpu_usage'])
+        else:
+            cpu_delta = 0.0
+            sys_delta = 0.0
+
+        if cur_stats.get('online_cpus'):
+            online_cpus = cur_stats['online_cpus']
+        else:
+            online_cpus = len(cur_stats['cpu_usage']['percpu_usage'])
+
+        if cpu_delta > 0.0 and sys_delta > 0.0:
+            r = (cpu_delta / sys_delta) * online_cpus * 100.0
+
+        return r
+
+    @staticmethod
+    def _calc_mem_usage(data):
+        return bitmath.Byte(data.get('usage', 0)).best_prefix().format('{value:.2f} {unit}').replace('Bit', 'B')
+
+    @staticmethod
+    def _calc_mem_limit(data):
+        return bitmath.Byte(data.get('limit', 0)).best_prefix().format('{value:.2f} {unit}').replace('Bit', 'B')
+
+    @staticmethod
+    def _calc_mem_percent(data):
+        if not data.get('limit'):
+            return 0.0
+        return float(data['usage']) / float(data['limit']) * 100.0
+
+    @staticmethod
+    def _calc_network(data):
+        rx = 0
+        tx = 0
+
+        if data:
+            for v in data.itervalues():
+                rx += v['rx_bytes']
+                tx += v['tx_bytes']
+
+        return (bitmath.Byte(rx).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'),
+                bitmath.Byte(tx).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'))
+
+    @staticmethod
+    def _calc_blockio(data):
+        read  = 0
+        write = 0
+
+        if data.get('io_service_bytes_recursive'):
+            for x in data['io_service_bytes_recursive']:
+                if x['op'] == 'Read':
+                    read  += x['value']
+                elif x['op'] == 'Write':
+                    write += x['value']
+
+        return (bitmath.Byte(read).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'),
+                bitmath.Byte(write).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'))
+
+    def pre_do_top(self):
+        stdscr = curses.initscr()
+        curses.noecho()
+        curses.cbreak()
+        curses.curs_set(0)
+        stdscr.keypad(1)
+        stdscr.nodelay(1)
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+        except:
+            pass
+
+        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_GREEN)
+        curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        curses.init_pair(3, curses.COLOR_BLUE, curses.COLOR_WHITE)
+        stdscr.clear()
+
+        stdscr.addstr(0,
+                      0,
+                      CURSES_TOP_LINE_FORMAT.format(*CURSES_TOP_COLUMNS),
+                      curses.color_pair(1))
+
+        return stdscr
+
+    def do_top(self, name, conf, i = 0, stdscr = None):
+        container = self._find_container(name, conf)
+        color = i % 2 + 2
+
+        if not container:
             return
 
-        LOG.info("[%s] Stopping", name)
-        self.cli.stop(cid)
+        for line in self.cli.stats(container['Id'], stream = True):
+            data  = json.loads(line)
+
+            if conf['_stats'] and data['read'] == conf['_stats']['read']:
+                continue
+
+            state = self._get_state(container['Id']) or ''
+
+            stdscr.clrtoeol()
+            stdscr.addstr(
+                i,
+                0,
+                (CURSES_TOP_LINE_FORMAT).format(
+                    name[0:50],
+                    "%s" % state,
+                    "%.2f%%" % self._calc_cpu_percent(data['cpu_stats'],
+                                                      conf['_stats'].get('cpu_stats')),
+                    "%s / %s" % (self._calc_mem_usage(data['memory_stats']),
+                                 self._calc_mem_limit(data['memory_stats'])),
+                    "%.2f%%" % self._calc_mem_percent(data['memory_stats']),
+                    "%s / %s" % self._calc_network(data.get('networks')),
+                    "%s / %s" % self._calc_blockio(data.get('blkio_stats'))),
+                curses.color_pair(color))
+            conf['_stats'] = data
+            stdscr.refresh()
+            time.sleep(0.5)
+
+    def post_do_top(self, *args):
+        while True:
+            event = args[0].getch()
+            if event == ord('q') or self.is_killed():
+                break
+            time.sleep(0.5)
+
+    def finally_do_top(self, *args):
+        args[0].keypad(0)
+        args[0].clear()
+        curses.echo()
+        curses.nocbreak()
+        curses.endwin()
 
 
 def main(options):
@@ -764,25 +1370,34 @@ def main(options):
     with open(options.conffile, 'r') as f:
         default_conf = yaml.load(f)
 
-    ret = 0
+    rc           = 0
+    pre_result   = None
+    post_args    = []
+    finally_args = []
 
     try:
         root_logger.setLevel(options.loglevel)
-
-        dockerator = Dockerator(options, default_conf)
+        options.action  = options.action.replace('-', '_')
+        dockerator      = Dockerator(options, default_conf)
 
         if not dockerator.confs:
             LOG.error("No container configuration found")
             return
 
         if hasattr(dockerator, "pre_do_%s" % dockerator.action):
-            res = getattr(dockerator, "pre_do_%s" % dockerator.action)()
-            if res is StatusReturn:
+            pre_result = getattr(dockerator, "pre_do_%s" % dockerator.action)()
+            if pre_result is StatusReturn:
                 return
 
-        conf       = dockerator.get_current_conf()
+        post_args.append(pre_result)
+        finally_args.append(pre_result)
+
+        conf = dockerator.get_current_conf()
         if not conf:
             return
+
+        i  = 1
+        nb = len(conf)
 
         for name in sorted(conf.iterkeys()):
             if not conf[name]['enable'] \
@@ -790,33 +1405,47 @@ def main(options):
                 LOG.debug("Container %r is not enabled", name)
                 continue
 
-            if options.dockerurl:
-                docker_url = options.dockerurl
-            else:
-                docker_url = conf[name]['general']['docker_url']
+            try:
+                dockerator.set_client(dockerator.register_client(conf[name]['docker_url']))
+                func = getattr(dockerator, "do_%s" % conf[name]['action'])
+                if conf[name]['action'] not in ('top',):
+                    func(name, conf[name])
+                else:
+                    thread = threading.Thread(target = func,
+                                              args = (name, conf[name], i, pre_result))
+                    thread.daemon = True
+                    thread.start()
+                i += 1
+            except Exception, e:
+                if nb == 1:
+                    raise
+                LOG.error("%r", getattr(e, 'explanation', e))
 
-            dockerator.set_client(dockerator.register_client(docker_url))
-            getattr(dockerator, "do_%s" % conf[name]['action'])(name, conf[name])
+        if hasattr(dockerator, "post_do_%s" % dockerator.action):
+            getattr(dockerator, "post_do_%s" % dockerator.action)(*post_args)
     except APIError, e:
-        ret = 180
+        rc = 180
         LOG.error("%r", e.explanation)
     except DockerException, e:
-        ret = 170
+        rc = 170
         LOG.error("%r", e)
     except DockeratorConfigException, e:
-        ret = 160
+        rc = 160
         LOG.error("%r", e)
     except (KeyboardInterrupt, SystemExit):
-        ret = 151
+        rc = 151
         raise
     except Exception: # pylint: disable=W0703
-        ret = 150
+        rc = 150
         LOG.exception("bad things happen")
     finally:
+        if hasattr(dockerator, "finally_do_%s" % dockerator.action):
+            getattr(dockerator, "finally_do_%s" % dockerator.action)(*finally_args)
+
         for cli in _CLIENTS.itervalues():
             if cli:
                 cli.close()
-        sys.exit(ret)
+        sys.exit(rc)
 
 if __name__ == '__main__':
     main(argv_parse_check())

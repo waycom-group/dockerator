@@ -1,5 +1,19 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
 
+include /usr/share/dpkg/pkg-info.mk
+
+# Uncomment this to turn on verbose mode.
+export DH_VERBOSE=1
+
 %:
-	dh $@ --with python2
+	dh $@
+
+override_dh_auto_install:
+	dh_auto_install
+	$(shell echo "$(DEB_VERSION_UPSTREAM)" > $(CURDIR)/VERSION)
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -f "$(CURDIR)/VERSION"
+	find . -type d -name '*.egg-info' | xargs rm -rf

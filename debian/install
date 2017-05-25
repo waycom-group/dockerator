@@ -1,2 +1,5 @@
 bin/  usr/
 etc/* etc/
+requirements.txt usr/share/dockerator
+setup.py usr/share/dockerator
+VERSION usr/share/dockerator
