@@ -1,3 +1,9 @@
+dockerator (1.0.8-3) unstable; urgency=medium
+
+  * Removed depends on docker.io and added depends on docker-ce.
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Fri, 02 Jun 2017 12:46:35 +0200
+
 dockerator (1.0.8-2) unstable; urgency=medium
 
   * Fixed some bugs

@@ -13,5 +13,5 @@ Architecture: all
 Homepage: http://www.waycom.net
 XB-Python-Version: ${python:Versions}
 Pre-depends: python-dev (>= 2.7), python-pip, python-setuptools
-Depends: ${misc:Depends}, ${python:Depends}, docker-engine | docker.io
+Depends: ${misc:Depends}, ${python:Depends}, docker-engine | docker-ce
 Description: Waycom Dockerator
