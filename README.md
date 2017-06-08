@@ -91,29 +91,31 @@ Usage: dockerator [options] [action]
 
 Options:
   -h, --help            show this help message and exit
-  -a ACTION             Choice action on one or many containers:
-                        create, kill, list, pull, reload, remove, remove-
-                        image, restart, run, start, state, stats, status,
-                        stop, top
+  -a ACTION             Choice action on one or many containers: create, kill,
+                        list, monit, pull, reload, remove, remove-image,
+                        restart, run, start, state, stats, status, stop, top
   -c CONFFILE           Use configuration file <conffile> instead of
                         /etc/dockerator/dockerator.yml
   --configs-dir=CONFSDIR
-                        Use configuration directory <confsdir> instead of default
+                        Use configuration directory <confsdir> instead of
                         /etc/dockerator/conf.d
   --docker-url=DOCKERURL
                         Use a specific Docker server
   -f                    Force
-  --image-name=IMGNAME  Specify which container to filter by image name
+  --image-name=IMGNAME  Choice container by image
   --image-configs-dir=IMGCONFSDIR
                         Use configuration directory <imgconfsdir> for images
-                        instead of default /etc/dockerator/image.d
-  -n NAME               Specify which container to filter by name
-  --logfile=LOGFILE     Use log file <logfile> instead of default
+                        instead of /etc/dockerator/image.d
+  -n NAME               Choice container by name
+  --logfile=LOGFILE     Use log file <logfile> instead of
                         /var/log/dockerator/dockerator.log
   -l LOGLEVEL           Emit traces with LOGLEVEL details, must be one of:
                         critical, error, warning, info, debug
+  --rsc=RESOURCE        Resource information: mem_usage, mem_limit,
+                        mem_percent, cpu_percent, io_read, io_write, net_tx,
+                        net_rx (only available with actions monit and stats)
   --scale=SCALE         Scaling container (value must be auto or container
-                        name
+                        name, e.g.: auto:1 or foo:2)
 ```
 
 ## Actions:
@@ -154,6 +156,27 @@ $ dockerator list
 * Containers by image:
 ```sh
 $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 list
+```
+
+### monit:
+Return the value by the return code for cpu_percent and mem_percent otherwise
+print the value.
+
+* All containers:
+```sh
+$ dockerator monit
+```
+* Containers by image:
+```sh
+$ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 monit
+```
+* Container by name:
+```sh
+$ dockerator -n fpm_foobar monit
+```
+* Container by name with ressource memory usage:
+```sh
+$ dockerator -n fpm_foobar monit --rsc=mem_percent
 ```
 
 ### pull:
@@ -263,7 +286,7 @@ $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 run
 ```sh
 $ dockerator -n fpm_foobar run
 ```
-* Container scaling 2 containers by name:
+* Scaling 2 containers by name:
 ```sh
 $ dockerator -n fpm_foobar --scale=auto:2
 ```
@@ -294,6 +317,28 @@ $ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 state
 * Container by name:
 ```sh
 $ dockerator -n fpm_foobar state
+```
+
+### stats:
+* All containers:
+```sh
+$ dockerator stats
+```
+* Containers by image:
+```sh
+$ dockerator --image-name=docker-registry.example.org/php-fpm:5.6 stats
+```
+* Container by name:
+```sh
+$ dockerator -n fpm_foobar stats
+```
+* Container by name with ressource memory usage:
+```sh
+$ dockerator -n fpm_foobar stats --rsc=mem_usage
+```
+* Container by name with ressources memory percent and cpu percent:
+```sh
+$ dockerator -n fpm_foobar stats --rsc=mem_percent --rsc=cpu_percent
 ```
 
 ### status:

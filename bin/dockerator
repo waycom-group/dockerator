@@ -68,6 +68,7 @@ MATCH_NAME_SCALE        = re.compile(r'^([a-zA-Z0-9][a-zA-Z0-9_\.\-]*)\.[0-9]{4}
 LABEL_NAME_SCALE_FORMAT = '__dockerator.scale.%s.name'
 LABEL_BIND_SCALE_FORMAT = '__dockerator.scale.%s.bind'
 
+STATUS_KEYS             = ("Id", "Image", "Command", "Created", "Status", "State", "Ports", "Names")
 CURSES_TOP_COLUMNS      = ("Container", "State", "CPU %", "Mem Usage / Limit", "Mem %", "Net I/O", "Block I/O")
 CURSES_TOP_LINE_FORMAT  = "{0:50} {1:15} {2:10} {3:25} {4:10} {5:20} {6:20}"
 
@@ -83,6 +84,7 @@ _FROM_INIT              = os.getenv('DOCKERATOR_INIT') == 'yes'
 ACTION_CHOICES          = ('create',
                            'kill',
                            'list',
+                           'monit',
                            'pull',
                            'reload',
                            'remove',
@@ -101,12 +103,24 @@ OVERWRITE_ACTIONS       = {'start':   ('run', 'restart', 'reload'),
                            'reload':  ('restart',),
                            'restart': ('reload',)}
 
+RESOURCE_CHOICES        = ('mem_usage',
+                           'mem_limit',
+                           'mem_percent',
+                           'cpu_percent',
+                           'io_read',
+                           'io_write',
+                           'net_tx',
+                           'net_rx')
+
 _CLIENTS                = {}
 _IMAGES                 = {'pull':   {},
                            'remove': {}}
 
 StatusContinue          = object()
 StatusReturn            = object()
+
+class StatusReturnCode(object):
+    rc = 0
 
 
 def argv_parse_check():
@@ -119,8 +133,8 @@ def argv_parse_check():
                       dest      = 'action',
                       default   = 'list',
                       choices   = ACTION_CHOICES,
-                      help      = ("Choice action on one or many containers:\n"
-                                   "\t%s" % ', '.join(ACTION_CHOICES)))
+                      help      = ("Choice action on one or many containers:\n" + \
+                                   ", ".join(ACTION_CHOICES)))
     parser.add_option("-c",
                       dest      = 'conffile',
                       type      = 'string',
@@ -164,10 +178,17 @@ def argv_parse_check():
                       choices   = ('critical', 'error', 'warning', 'info', 'debug'),
                       help      = ("Emit traces with LOGLEVEL details, must be one of:\t"
                                    "critical, error, warning, info, debug"))
+    parser.add_option("--rsc",
+                      action    = 'append',
+                      dest      = 'resource',
+                      default   = [],
+                      choices   = RESOURCE_CHOICES,
+                      help      = "Resource information:\n" + \
+                                  ", ".join(RESOURCE_CHOICES) + " (only available with actions monit and stats)")
     parser.add_option("--scale",
                       dest      = 'scale',
                       default   = False,
-                      help      = "Scaling container (value must be auto or container name")
+                      help      = "Scaling container (value must be auto or container name, e.g.: auto:1 or foo:2)")
 
     options, args       = parser.parse_args()
 
@@ -176,6 +197,14 @@ def argv_parse_check():
 
     if args:
         parser.error("only argument [action] is allowed - use option --help to get an help screen")
+
+    if not options.resource:
+        options.resource = RESOURCE_CHOICES
+
+    if options.action == 'monit':
+        options.resource = [options.resource[0]]
+    else:
+        options.resource = list(set(options.resource))
 
     options.loglevel    = getattr(logging, options.loglevel.upper(), logging.INFO)
 
@@ -486,6 +515,7 @@ class Dockerator(object):
                 ref['conf'] = self._build_conf_end(sname, ref['conf'])
 
             if self.action not in ('create', 'reload', 'restart', 'run', 'start'):
+                ref['conf'] = self._build_conf_end(sname, ref['conf'])
                 continue
 
             if not port:
@@ -496,6 +526,7 @@ class Dockerator(object):
             sport = self._find_scale_port(ref['host'], sport)
 
             if not sport:
+                ref['conf'] = self._build_conf_end(sname, ref['conf'])
                 LOG.warning("Unable to find an available port for %r", port)
                 break
 
@@ -653,7 +684,7 @@ class Dockerator(object):
             reverse = False
             recheck = self.scale == 'auto'
             states  = ('exited', 'dead', 'paused',)
-        elif self.action in ('stats', 'status', 'top'):
+        elif self.action in ('monit', 'state', 'stats', 'status', 'top'):
             exists  = True
             state   = True
 
@@ -990,6 +1021,88 @@ class Dockerator(object):
             if '/%s' % name in c['Names']:
                 return c
 
+    @staticmethod
+    def _calc_cpu_percent(cur_stats, pre_stats):
+        r = 0.0
+
+        if not cur_stats.get('system_cpu_usage'):
+           return r
+
+        if not pre_stats or not pre_stats.get('system_cpu_usage'):
+           return r
+
+        if pre_stats:
+            cpu_delta = float(cur_stats['cpu_usage']['total_usage']) - float(pre_stats['cpu_usage']['total_usage'])
+            sys_delta = float(cur_stats['system_cpu_usage']) - float(pre_stats['system_cpu_usage'])
+        else:
+            cpu_delta = 0.0
+            sys_delta = 0.0
+
+        if cur_stats.get('online_cpus'):
+            online_cpus = cur_stats['online_cpus']
+        else:
+            online_cpus = len(cur_stats['cpu_usage']['percpu_usage'])
+
+        if cpu_delta > 0.0 and sys_delta > 0.0:
+            r = (cpu_delta / sys_delta) * online_cpus * 100.0
+
+        return round(r, 2)
+
+    def _calc_mem_usage(self, data):
+        usage = data.get('usage', 0)
+
+        if self.action == 'monit':
+            return usage
+
+        return bitmath.Byte(usage).best_prefix().format('{value:.2f} {unit}').replace('Bit', 'B')
+
+    def _calc_mem_limit(self, data):
+        limit = data.get('limit', 0)
+
+        if self.action == 'monit':
+            return limit
+
+        return bitmath.Byte(limit).best_prefix().format('{value:.2f} {unit}').replace('Bit', 'B')
+
+    @staticmethod
+    def _calc_mem_percent(data):
+        if not data.get('limit'):
+            return 0.0
+
+        return round(float(data['usage']) / float(data['limit']) * 100.0, 2)
+
+    def _calc_network(self, data):
+        rx = 0
+        tx = 0
+
+        if data:
+            for v in data.itervalues():
+                rx += v['rx_bytes']
+                tx += v['tx_bytes']
+
+        if self.action == 'monit':
+            return (rx, tx)
+
+        return (bitmath.Byte(rx).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'),
+                bitmath.Byte(tx).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'))
+
+    def _calc_blockio(self, data):
+        read  = 0
+        write = 0
+
+        if data.get('io_service_bytes_recursive'):
+            for x in data['io_service_bytes_recursive']:
+                if x['op'] == 'Read':
+                    read  += x['value']
+                elif x['op'] == 'Write':
+                    write += x['value']
+
+        if self.action == 'monit':
+            return (read, write)
+
+        return (bitmath.Byte(read).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'),
+                bitmath.Byte(write).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'))
+
     def do_create(self, name, conf):
         for x in self.cli.containers(**{'all': True, 'filters': {'name': name}}):
             if 'Names' in x and "/%s" % name in x['Names']:
@@ -1158,11 +1271,31 @@ class Dockerator(object):
         state = self._get_state(container['Id'])
         if not state:
             LOG.warning("Unable to fetch container information: %r", name)
+            return
 
         if self.options.name and not self.scale:
             print state
         else:
             print "%s: %s" % (name, state)
+
+    def _get_resource_info(self, choice, current, previous):
+        if choice == 'mem_usage':
+            return self._calc_mem_usage(current['memory_stats'])
+        elif choice == 'mem_limit':
+            return self._calc_mem_limit(current['memory_stats'])
+        elif choice == 'mem_percent':
+            return self._calc_mem_percent(current['memory_stats'])
+        elif choice == 'cpu_percent':
+            return self._calc_cpu_percent(current['cpu_stats'],
+                                          previous.get('cpu_stats'))
+        elif choice == 'io_read':
+            return self._calc_blockio(current.get('blkio_stats'))[0]
+        elif choice == 'io_write':
+            return self._calc_blockio(current.get('blkio_stats'))[1]
+        elif choice == 'net_tx':
+            return self._calc_blockio(current.get('networks'))[0]
+        elif choice == 'net_rx':
+            return self._calc_blockio(current.get('networks'))[1]
 
     def do_stats(self, name, conf):
         container = self._find_container(name, conf)
@@ -1170,7 +1303,39 @@ class Dockerator(object):
         if not container:
             return
 
-        print self.cli.stats(container['Id'], stream = False)
+        for line in self.cli.stats(container['Id'], stream = True):
+            data  = json.loads(line)
+
+            if not conf['_stats']:
+                conf['_stats'] = data
+                continue
+            elif data['read'] == conf['_stats']['read']:
+                continue
+
+            if self.action == 'monit':
+                rsc = self.options.resource[0]
+                ret = self._get_resource_info(rsc, data, conf['_stats'])
+
+                if rsc.endswith('_percent'):
+                    ret = int(ret)
+                else:
+                    ret = str(ret)
+
+                StatusReturnCode.rc = ret
+
+                return StatusReturnCode
+
+            r = ["%s" % name]
+
+            for choice in self.options.resource:
+                r.append("%s:%s" % (choice, self._get_resource_info(choice, data, conf['_stats'])))
+
+            print '|'.join(r)
+
+            return
+
+    def do_monit(self, name, conf):
+        return self.do_stats(name, conf)
 
     def do_status(self, name, conf):
         container = self._find_container(name, conf)
@@ -1179,7 +1344,7 @@ class Dockerator(object):
             return
 
         print "Container: %r" % name
-        for key in ('Id', 'Image', 'Command', 'Created', 'Status', 'State', 'Ports', 'Names'):
+        for key in STATUS_KEYS:
             key_view = "%s:" % key
             if key == 'Created':
                 print "    %-10s%s" % (key_view,
@@ -1210,75 +1375,6 @@ class Dockerator(object):
     def do_stop(self, name, conf):
         LOG.info("[%s] Stopping", name)
         self.cli.stop(name)
-
-    @staticmethod
-    def _calc_cpu_percent(cur_stats, pre_stats):
-        r = 0.0
-
-        if not cur_stats.get('system_cpu_usage'):
-           return r
-
-        if not pre_stats or not pre_stats.get('system_cpu_usage'):
-           return r
-
-        if pre_stats:
-            cpu_delta = float(cur_stats['cpu_usage']['total_usage']) - float(pre_stats['cpu_usage']['total_usage'])
-            sys_delta = float(cur_stats['system_cpu_usage']) - float(pre_stats['system_cpu_usage'])
-        else:
-            cpu_delta = 0.0
-            sys_delta = 0.0
-
-        if cur_stats.get('online_cpus'):
-            online_cpus = cur_stats['online_cpus']
-        else:
-            online_cpus = len(cur_stats['cpu_usage']['percpu_usage'])
-
-        if cpu_delta > 0.0 and sys_delta > 0.0:
-            r = (cpu_delta / sys_delta) * online_cpus * 100.0
-
-        return r
-
-    @staticmethod
-    def _calc_mem_usage(data):
-        return bitmath.Byte(data.get('usage', 0)).best_prefix().format('{value:.2f} {unit}').replace('Bit', 'B')
-
-    @staticmethod
-    def _calc_mem_limit(data):
-        return bitmath.Byte(data.get('limit', 0)).best_prefix().format('{value:.2f} {unit}').replace('Bit', 'B')
-
-    @staticmethod
-    def _calc_mem_percent(data):
-        if not data.get('limit'):
-            return 0.0
-        return float(data['usage']) / float(data['limit']) * 100.0
-
-    @staticmethod
-    def _calc_network(data):
-        rx = 0
-        tx = 0
-
-        if data:
-            for v in data.itervalues():
-                rx += v['rx_bytes']
-                tx += v['tx_bytes']
-
-        return (bitmath.Byte(rx).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'),
-                bitmath.Byte(tx).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'))
-
-    @staticmethod
-    def _calc_blockio(data):
-        read  = 0
-        write = 0
-
-        if data.get('io_service_bytes_recursive'):
-            for x in data['io_service_bytes_recursive']:
-                if x['op'] == 'Read':
-                    read  += x['value']
-                elif x['op'] == 'Write':
-                    write += x['value']
-
-        return (bitmath.Byte(read).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'),
-                bitmath.Byte(write).to_kB().best_prefix().format('{value:.1f} {unit}').replace('Bit', 'B'))
 
     def pre_do_top(self):
         stdscr = curses.initscr()
@@ -1327,11 +1423,11 @@ class Dockerator(object):
                 (CURSES_TOP_LINE_FORMAT).format(
                     name[0:50],
                     "%s" % state,
-                    "%.2f%%" % self._calc_cpu_percent(data['cpu_stats'],
-                                                      conf['_stats'].get('cpu_stats')),
+                    "%s%%" % self._calc_cpu_percent(data['cpu_stats'],
+                                                    conf['_stats'].get('cpu_stats')),
                     "%s / %s" % (self._calc_mem_usage(data['memory_stats']),
                                  self._calc_mem_limit(data['memory_stats'])),
-                    "%.2f%%" % self._calc_mem_percent(data['memory_stats']),
+                    "%s%%" % self._calc_mem_percent(data['memory_stats']),
                     "%s / %s" % self._calc_network(data.get('networks')),
                     "%s / %s" % self._calc_blockio(data.get('blkio_stats'))),
                 curses.color_pair(color))
@@ -1407,14 +1503,20 @@ def main(options):
 
             try:
                 dockerator.set_client(dockerator.register_client(conf[name]['docker_url']))
+                rc   = None
                 func = getattr(dockerator, "do_%s" % conf[name]['action'])
                 if conf[name]['action'] not in ('top',):
-                    func(name, conf[name])
+                    rc = func(name, conf[name])
                 else:
                     thread = threading.Thread(target = func,
                                               args = (name, conf[name], i, pre_result))
                     thread.daemon = True
                     thread.start()
+
+                if rc is StatusReturnCode:
+                    rc = StatusReturnCode.rc
+                    break
+
                 i += 1
             except Exception, e:
                 if nb == 1:
