@@ -64,7 +64,7 @@ DEFAULT_SCALE_PORT      = 0
 DEFAULT_SCALE_HOST      = '0.0.0.0'
 
 NAME_SCALE_FORMAT       = '%s.%04d.dr'
-MATCH_NAME_SCALE        = re.compile(r'^([a-zA-Z0-9][a-zA-Z0-9_\.\-]*)\.[0-9]{4}\.dr$').match
+MATCH_NAME_SCALE        = re.compile(r'^([a-zA-Z0-9][a-zA-Z0-9_\.\-]*)\.([0-9]{4})\.dr$').match
 LABEL_NAME_SCALE_FORMAT = '__dockerator.scale.%s.name'
 LABEL_BIND_SCALE_FORMAT = '__dockerator.scale.%s.bind'
 
@@ -120,7 +120,7 @@ StatusContinue          = object()
 StatusReturn            = object()
 
 class StatusReturnCode(object):
-    rc = 0
+    RETURN_CODE = 0
 
 
 def argv_parse_check():
@@ -184,7 +184,7 @@ def argv_parse_check():
                       default   = [],
                       choices   = RESOURCE_CHOICES,
                       help      = "Resource information:\n" + \
-                                  ", ".join(RESOURCE_CHOICES) + " (only available with actions monit and stats)")
+                                  ", ".join(RESOURCE_CHOICES) + " (only available with actions monit or stats)")
     parser.add_option("--scale",
                       dest      = 'scale',
                       default   = False,
@@ -229,7 +229,7 @@ class Dockerator(object):
         signal.signal(signal.SIGINT, self._kill)
 
         if options.scale:
-            self.scale, scale_nb, x = ("%s:1:" % options.scale).split(':', 2)
+            self.scale, scale_nb, unused = ("%s:1:" % options.scale).split(':', 2)
             if scale_nb.isdigit():
                 self.scale_nb = int(scale_nb)
             else:
@@ -430,24 +430,47 @@ class Dockerator(object):
 
         return current
 
-    def _build_conf_scale(self, name, docker_url, conf):
-        label_name = LABEL_NAME_SCALE_FORMAT % name
+    @staticmethod
+    def _set_container_scale_default(sname, num, host, conf):
+        return {'exists': False,
+                'state': None,
+                'name': sname,
+                'number': num,
+                'host': host,
+                'conf': copy.deepcopy(conf)}
+
+    def _set_container_scale_bind(self, name, sname, ref, label_name, info = None, bind = None):
         label_bind = LABEL_BIND_SCALE_FORMAT % name
 
-        r = {'min':        DEFAULT_SCALE_MIN,
-             'max':        DEFAULT_SCALE_MAX,
-             'count':      0,
-             'containers': {}}
+        if bind:
+            ref['bind'] = bind
+        elif info:
+            ref['state']  = info['State']
+            if 'Labels' in info and label_bind in info['Labels']:
+                ref['bind'] = info['Labels'][label_bind]
+        else:
+            raise DockeratorConfigException("missing scaling bind configuration (name: %r)" % sname)
 
-        host = None
-        port = None
+        ref['host'], ref['port']            = ref['bind'].split(':', 1)
+        ref['conf']['general']['host_ip']   = ref['host']
+        ref['conf']['general']['host_port'] = ref['port']
 
+        if 'labels' not in ref['conf']['general']:
+            ref['conf']['general']['labels'] = {}
+
+        ref['conf']['general']['labels'][label_name] = name
+        ref['conf']['general']['labels'][label_bind] = ref['bind']
+
+        ref['conf'] = self._build_conf_end(sname, ref['conf'])
+
+    @staticmethod
+    def _get_min_max_scale(r, conf):
         for x in ('min', 'max'):
-            if x not in conf['scale']:
+            if x not in conf:
                 continue
 
             try:
-                r[x] = int(conf['scale'][x])
+                r[x] = int(conf[x])
             except ValueError, e:
                 raise DockeratorConfigException("Invalid configuration option %r in 'scale' (error: %r)" % (x, e))
 
@@ -459,60 +482,75 @@ class Dockerator(object):
                                             % (r['min'],
                                                r['max']))
 
-        if 'port' in conf['scale']:
+        return r
+
+    @staticmethod
+    def _get_host_port_scale(conf):
+        port = None
+
+        if 'port' in conf:
             try:
-                port = int(conf['scale']['port'])
+                port = int(conf['port'])
             except ValueError, e:
                 raise DockeratorConfigException("Invalid configuration option 'port' in 'scale' (error: %r)" % e)
 
             if not 1024 < port < 65500:
-                raise DockeratorConfigException("Invalid 'port' value in 'scale' (port: %r)" % r['port'])
+                raise DockeratorConfigException("Invalid 'port' value in 'scale' (port: %r)" % port)
 
         if port is None:
             port = DEFAULT_SCALE_PORT
 
-        if 'host' not in conf['scale']:
-            host = DEFAULT_SCALE_HOST
-        else:
-            host = conf['scale']['host']
+        return (conf.get('host', DEFAULT_SCALE_HOST), port)
+
+    def _build_conf_scale(self, name, docker_url, conf):
+        label_name = LABEL_NAME_SCALE_FORMAT % name
+
+        r = {'min':        DEFAULT_SCALE_MIN,
+             'max':        DEFAULT_SCALE_MAX,
+             'count':      0,
+             'containers': {}}
+
+        self._get_min_max_scale(r, conf['scale'])
+        host, port = self._get_host_port_scale(conf['scale'])
 
         self.set_client(self.register_client(docker_url))
+        containers = self.cli.containers(**{'all': True, 'filters': {'label': label_name}})
+        r['count'] = len(containers)
 
-        r['count'] = len(self.cli.containers(**{'all': True, 'filters': {'label': label_name}}))
+        if r['count']:
+            for info in containers:
+                num     = None
+                sname   = None
+                if 'Names' not in info:
+                    continue
 
-        for n in range(r['min'] - 1, r['max']):
-            sname = NAME_SCALE_FORMAT % (name, n)
-            r['containers'][sname] = {'exists': False,
-                                      'state':  None,
-                                      'host':   host,
-                                      'number': n,
-                                      'name':   sname,
-                                      'conf':   copy.deepcopy(conf)}
+                for sname in info['Names']:
+                    sname = sname[1:]
+                    m = MATCH_NAME_SCALE(sname)
+                    if m:
+                        num = int(m.group(2))
+                        break
 
+                if num is None:
+                    continue
+
+                r['containers'][sname] = self._set_container_scale_default(sname, num, host, conf)
+                ref = r['containers'][sname]
+
+                ref['exists'] = True
+                self._set_container_scale_bind(name, sname, ref, label_name, info)
+
+        for num in range(r['min'] - 1, r['max']):
+            sname = NAME_SCALE_FORMAT % (name, num)
+            r['containers'][sname] = self._set_container_scale_default(sname, num, host, conf)
             ref = r['containers'][sname]
 
-            for x in self.cli.containers(**{'all': True, 'filters': {'name': sname}}):
-                if 'Names' not in x or "/%s" % sname not in x['Names']:
+            for info in self.cli.containers(**{'all': True, 'filters': {'name': sname}}):
+                if 'Names' not in info or "/%s" % sname not in info['Names']:
                     continue
 
                 ref['exists'] = True
-                ref['state']  = x['State']
-
-                ref['conf']['general']['name'] = sname
-
-                if 'Labels' in x and label_bind in x['Labels']:
-                    ref['bind'] = x['Labels'][label_bind]
-                    ref['host'], ref['port'] = ref['bind'].split(':', 1)
-                    ref['conf']['general']['host_ip'] = ref['host']
-                    ref['conf']['general']['host_port'] = ref['port']
-
-                if 'labels' not in ref['conf']['general']:
-                    ref['conf']['general']['labels'] = {}
-
-                ref['conf']['general']['labels'][label_name] = name
-                ref['conf']['general']['labels'][label_bind] = ref['bind']
-
-                ref['conf'] = self._build_conf_end(sname, ref['conf'])
+                self._set_container_scale_bind(name, sname, ref, label_name, info)
 
             if self.action not in ('create', 'reload', 'restart', 'run', 'start'):
                 ref['conf'] = self._build_conf_end(sname, ref['conf'])
@@ -521,7 +559,7 @@ class Dockerator(object):
             if not port:
                 sport = port
             else:
-                sport = port + n
+                sport = port + num
 
             sport = self._find_scale_port(ref['host'], sport)
 
@@ -534,18 +572,15 @@ class Dockerator(object):
                 port += 1
 
             ref['port'] = sport
-            ref['bind'] = "%s:%s" % (ref['host'], ref['port'])
             ref['conf']['general']['name'] = sname
-            ref['conf']['general']['host_ip'] = ref['host']
-            ref['conf']['general']['host_port'] = ref['port']
 
-            if 'labels' not in ref['conf']['general']:
-                ref['conf']['general']['labels'] = {}
-
-            ref['conf']['general']['labels'][label_name] = name
-            ref['conf']['general']['labels'][label_bind] = ref['bind']
-
-            ref['conf'] = self._build_conf_end(sname, ref['conf'])
+            self._set_container_scale_bind(
+                name,
+                sname,
+                ref,
+                label_name,
+                None,
+                "%s:%s" % (ref['host'], ref['port']))
 
         conf['scale'] = r
 
@@ -1026,10 +1061,10 @@ class Dockerator(object):
         r = 0.0
 
         if not cur_stats.get('system_cpu_usage'):
-           return r
+            return r
 
         if not pre_stats or not pre_stats.get('system_cpu_usage'):
-           return r
+            return r
 
         if pre_stats:
             cpu_delta = float(cur_stats['cpu_usage']['total_usage']) - float(pre_stats['cpu_usage']['total_usage'])
@@ -1321,7 +1356,7 @@ class Dockerator(object):
                 else:
                     ret = str(ret)
 
-                StatusReturnCode.rc = ret
+                StatusReturnCode.RETURN_CODE = ret
 
                 return StatusReturnCode
 
@@ -1376,7 +1411,8 @@ class Dockerator(object):
         LOG.info("[%s] Stopping", name)
         self.cli.stop(name)
 
-    def pre_do_top(self):
+    @staticmethod
+    def pre_do_top():
         stdscr = curses.initscr()
         curses.noecho()
         curses.cbreak()
@@ -1442,7 +1478,8 @@ class Dockerator(object):
                 break
             time.sleep(0.5)
 
-    def finally_do_top(self, *args):
+    @staticmethod
+    def finally_do_top(*args):
         args[0].keypad(0)
         args[0].clear()
         curses.echo()
@@ -1514,7 +1551,7 @@ def main(options):
                     thread.start()
 
                 if rc is StatusReturnCode:
-                    rc = StatusReturnCode.rc
+                    rc = StatusReturnCode.RETURN_CODE
                     break
 
                 i += 1
@@ -1541,7 +1578,7 @@ def main(options):
         rc = 150
         LOG.exception("bad things happen")
     finally:
-        if hasattr(dockerator, "finally_do_%s" % dockerator.action):
+        if dockerator and hasattr(dockerator, "finally_do_%s" % dockerator.action):
             getattr(dockerator, "finally_do_%s" % dockerator.action)(*finally_args)
 
         for cli in _CLIENTS.itervalues():

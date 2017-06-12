@@ -5,7 +5,7 @@ import os
 from setuptools import setup
 
 requirements = [line.strip() for line in open('requirements.txt', 'r').readlines()]
-version      = '1.0.8-4'
+version      = '1.0.8-5'
 
 if os.path.isfile('VERSION'):
     version = open('VERSION', 'r').readline().strip() or version
