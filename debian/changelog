@@ -1,3 +1,9 @@
+dockerator (1.0.8-6) unstable; urgency=medium
+
+  * Features added options pid_mode and volumes_from
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Thu, 15 Jun 2017 14:13:35 +0200
+
 dockerator (1.0.8-5) unstable; urgency=medium
 
   * Fixed problem with scaled containers

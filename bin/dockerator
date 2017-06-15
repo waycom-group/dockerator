@@ -74,6 +74,7 @@ CURSES_TOP_LINE_FORMAT  = "{0:50} {1:15} {2:10} {3:25} {4:10} {5:20} {6:20}"
 
 RESTART_POLICIES        = ('always', 'on-failure')
 
+PID_MODES               = ('host',)
 NETWORK_MODES           = ('bridge', 'none', 'host')
 
 SYSLOG_NAME             = "Dockerator"
@@ -841,6 +842,17 @@ class Dockerator(object):
             raise DockeratorConfigException("Invalid configuration option 'network_mode' in 'general'")
 
     @staticmethod
+    def _build_param_hc_pid_mode(pid_mode):
+        if not isinstance(pid_mode, basestring):
+            raise DockeratorConfigException("Invalid type for option 'pid_mode' in 'general'")
+        elif pid_mode in PID_MODES:
+            return pid_mode
+        elif pid_mode.startswith('container:'):
+            return pid_mode
+        else:
+            raise DockeratorConfigException("Invalid configuration option 'pid_mode' in 'general'")
+
+    @staticmethod
     def _build_param_hc_host(hosts):
         r = {}
 
@@ -919,6 +931,46 @@ class Dockerator(object):
         return r
 
     @staticmethod
+    def _build_param_links(links):
+        if isinstance(links, dict):
+            return links.copy()
+
+        raise DockeratorConfigException("Invalid configuration option 'links' in 'general'")
+
+    @staticmethod
+    def _build_param_labels(labels):
+        if isinstance(labels, dict):
+            return labels.copy()
+
+        raise DockeratorConfigException("Invalid configuration option 'labels' in 'general'")
+
+    @staticmethod
+    def _build_param_command(docker_cmds):
+        r = []
+
+        if isinstance(docker_cmds, basestring):
+            r.append(docker_cmds)
+        elif isinstance(docker_cmds, list):
+            r.extend(docker_cmds)
+        else:
+            raise DockeratorConfigException("Invalid configuration option 'docker_cmds' in 'general'")
+
+        return r
+
+    @staticmethod
+    def _build_param_hc_volumes_from(names):
+        r = []
+
+        if isinstance(names, basestring):
+            r.append(names)
+        elif isinstance(names, list):
+            r.extend(names)
+        else:
+            raise DockeratorConfigException("Invalid configuration option 'volumes_from' in 'general'")
+
+        return r
+
+    @staticmethod
     def _build_param_host_config(conf):
         host_config = {}
 
@@ -951,6 +1003,12 @@ class Dockerator(object):
         if 'network_mode' in conf['general']:
             host_config['network_mode'] = Dockerator._build_param_hc_network_mode(conf['general']['network_mode'])
 
+        if 'pid_mode' in conf['general']:
+            host_config['pid_mode'] = Dockerator._build_param_hc_pid_mode(conf['general']['pid_mode'])
+
+        if 'volumes_from' in conf['general']:
+            host_config['volumes_from'] = Dockerator._build_param_hc_volumes_from(conf['general']['volumes_from'])
+
         if 'ports' in conf and isinstance(conf['ports'], dict):
             ports = Dockerator._build_param_hc_port(conf)
             if ports:
@@ -973,33 +1031,6 @@ class Dockerator(object):
             del host_config['binds']
 
         return host_config
-
-    @staticmethod
-    def _build_param_links(links):
-        if isinstance(links, dict):
-            return links.copy()
-
-        raise DockeratorConfigException("Invalid configuration option 'links' in 'general'")
-
-    @staticmethod
-    def _build_param_labels(labels):
-        if isinstance(labels, dict):
-            return labels.copy()
-
-        raise DockeratorConfigException("Invalid configuration option 'labels' in 'general'")
-
-    @staticmethod
-    def _build_param_command(docker_cmds):
-        r = []
-
-        if isinstance(docker_cmds, basestring):
-            r.append(docker_cmds)
-        elif isinstance(docker_cmds, list):
-            r.extend(docker_cmds)
-        else:
-            raise DockeratorConfigException("Invalid configuration option 'docker_cmds' in 'general'")
-
-        return r
 
     @staticmethod
     def _build_create_params(conf):
