@@ -1,3 +1,21 @@
+dockerator (1.0.8-9) unstable; urgency=medium
+
+  * Added option -y on command pip uninstall in postinst
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Wed, 05 Jul 2017 17:01:46 +0200
+
+dockerator (1.0.8-8) unstable; urgency=medium
+
+  * Force pip install docker in postinst
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@waycom.net>  Wed, 05 Jul 2017 15:58:56 +0200
+
+dockerator (1.0.8-7) unstable; urgency=medium
+
+  * Added pip uninstall docker-py in postinst
+
+ -- Adrien DELLE CAVE (Decryptus) <devs@doowan.net>  Tue, 04 Jul 2017 20:50:00 +0200
+
 dockerator (1.0.8-6) unstable; urgency=medium
 
   * Features added options pid_mode and volumes_from

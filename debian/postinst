@@ -5,6 +5,8 @@ set -e
 case "$1" in
     configure)
     easy_install pip
+    pip uninstall -y docker || true
+    pip uninstall -y docker-py || true
     pip install -r /usr/share/dockerator/requirements.txt
     ;;
 
